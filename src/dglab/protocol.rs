@@ -1,8 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+use crate::domain::types::DglabChannel;
+
 pub const MAX_JSON_CHARS: usize = 1_950;
 pub const MESSAGE_TARGET_ID: &str = "targetId";
 pub const MESSAGE_DGLAB: &str = "DGLAB";
+pub const MAX_PULSE_ITEMS: usize = 100;
+pub const PULSE_HEX_CHARS: usize = 16;
 
 pub const CODE_OK: &str = "200";
 pub const CODE_QR_CLIENT_ID_INVALID: &str = "210";
@@ -12,6 +16,114 @@ pub const CODE_INVALID_JSON: &str = "403";
 pub const CODE_RECEIVER_OFFLINE: &str = "404";
 pub const CODE_MESSAGE_TOO_LONG: &str = "405";
 pub const CODE_INTERNAL_ERROR: &str = "500";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StrengthControlMode {
+    Decrease,
+    Increase,
+    #[default]
+    SetValue,
+}
+
+impl StrengthControlMode {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Decrease => "Decrease",
+            Self::Increase => "Increase",
+            Self::SetValue => "Set",
+        }
+    }
+
+    pub const fn opcode(self) -> u8 {
+        match self {
+            Self::Decrease => 0,
+            Self::Increase => 1,
+            Self::SetValue => 2,
+        }
+    }
+}
+
+pub fn build_strength_message(
+    channel: DglabChannel,
+    mode: StrengthControlMode,
+    value: u16,
+) -> String {
+    format!(
+        "strength-{}+{}+{}",
+        channel.strength_channel_id(),
+        mode.opcode(),
+        value.min(200)
+    )
+}
+
+pub fn build_clear_message(channel: DglabChannel) -> String {
+    format!("clear-{}", channel.strength_channel_id())
+}
+
+pub fn build_pulse_message(channel: DglabChannel, raw_hex_items: &str) -> Result<String, String> {
+    let mut items = Vec::new();
+    for token in raw_hex_items.split(|c: char| c.is_whitespace() || [',', ';', '|'].contains(&c)) {
+        let item = token.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let normalized = item.to_ascii_uppercase();
+        if normalized.len() != PULSE_HEX_CHARS || !normalized.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err(format!(
+                "invalid pulse item `{item}`. each item must be 16 HEX chars, e.g. 0A0A0A0A00000000"
+            ));
+        }
+        items.push(normalized);
+    }
+
+    if items.is_empty() {
+        return Err("no pulse item provided".to_owned());
+    }
+    if items.len() > MAX_PULSE_ITEMS {
+        return Err(format!(
+            "too many pulse items: {} (max {MAX_PULSE_ITEMS})",
+            items.len()
+        ));
+    }
+
+    let json_array = serde_json::to_string(&items).map_err(|err| err.to_string())?;
+    Ok(format!("pulse-{}:{json_array}", channel.pulse_symbol()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StrengthReport {
+    pub a_strength: u16,
+    pub b_strength: u16,
+    pub a_soft_limit: u16,
+    pub b_soft_limit: u16,
+}
+
+pub fn parse_strength_report(message: &str) -> Option<StrengthReport> {
+    let payload = message.trim().strip_prefix("strength-")?;
+    let mut parts = payload.split('+');
+    let a_strength = parts.next()?.parse::<u16>().ok()?;
+    let b_strength = parts.next()?.parse::<u16>().ok()?;
+    let a_soft_limit = parts.next()?.parse::<u16>().ok()?;
+    let b_soft_limit = parts.next()?.parse::<u16>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    if [a_strength, b_strength, a_soft_limit, b_soft_limit]
+        .iter()
+        .any(|value| *value > 200)
+    {
+        return None;
+    }
+
+    Some(StrengthReport {
+        a_strength,
+        b_strength,
+        a_soft_limit,
+        b_soft_limit,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PacketType {
@@ -133,5 +245,48 @@ impl SocketPacket {
             && !self.client_id.trim().is_empty()
             && !self.target_id.trim().is_empty()
             && !self.message.trim().is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        StrengthControlMode, build_clear_message, build_pulse_message, build_strength_message,
+        parse_strength_report,
+    };
+    use crate::domain::types::DglabChannel;
+
+    #[test]
+    fn builds_strength_message() {
+        let msg = build_strength_message(DglabChannel::A, StrengthControlMode::SetValue, 35);
+        assert_eq!(msg, "strength-1+2+35");
+    }
+
+    #[test]
+    fn builds_clear_message() {
+        let msg = build_clear_message(DglabChannel::B);
+        assert_eq!(msg, "clear-2");
+    }
+
+    #[test]
+    fn builds_pulse_message_from_text() {
+        let msg = build_pulse_message(DglabChannel::A, "0A0A0A0A00000000, a1b2c3d4e5f60718")
+            .expect("must pass");
+        assert_eq!(msg, "pulse-A:[\"0A0A0A0A00000000\",\"A1B2C3D4E5F60718\"]");
+    }
+
+    #[test]
+    fn rejects_invalid_pulse_item() {
+        let err = build_pulse_message(DglabChannel::A, "123").expect_err("must fail");
+        assert!(err.contains("invalid pulse item"));
+    }
+
+    #[test]
+    fn parses_strength_report() {
+        let report = parse_strength_report("strength-11+7+100+35").expect("must parse");
+        assert_eq!(report.a_strength, 11);
+        assert_eq!(report.b_strength, 7);
+        assert_eq!(report.a_soft_limit, 100);
+        assert_eq!(report.b_soft_limit, 35);
     }
 }

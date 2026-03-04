@@ -372,8 +372,7 @@ impl DglabWsServer {
 
         match packet.kind() {
             Some(PacketType::Bind) => {
-                if packet.message != MESSAGE_DGLAB || packet.client_id != self.config.controller_id
-                {
+                if packet.message != MESSAGE_DGLAB {
                     Self::send_packet(
                         ws_write,
                         &SocketPacket::bind_result(
@@ -386,7 +385,14 @@ impl DglabWsServer {
                     return Ok(true);
                 }
 
-                if packet.target_id != app_id {
+                if !self.is_controller_app_pair(&packet.client_id, &packet.target_id, app_id) {
+                    tracing::warn!(
+                        "bind pair mismatch: clientId={}, targetId={}, expected controllerId={} with appId={}",
+                        packet.client_id,
+                        packet.target_id,
+                        self.config.controller_id,
+                        app_id
+                    );
                     Self::send_packet(
                         ws_write,
                         &SocketPacket::bind_result(
@@ -432,10 +438,28 @@ impl DglabWsServer {
                 Ok(true)
             }
             Some(PacketType::Msg) => {
-                if !*bound
-                    || packet.client_id != app_id
-                    || packet.target_id != self.config.controller_id
-                {
+                if !*bound {
+                    tracing::warn!("received msg before bind=200, reject with 402");
+                    Self::send_packet(
+                        ws_write,
+                        &SocketPacket::bind_result(
+                            self.config.controller_id.clone(),
+                            app_id.to_owned(),
+                            CODE_NOT_BOUND,
+                        ),
+                    )
+                    .await?;
+                    return Ok(true);
+                }
+
+                if !self.is_controller_app_pair(&packet.client_id, &packet.target_id, app_id) {
+                    tracing::warn!(
+                        "msg pair mismatch: clientId={}, targetId={}, expected controllerId={} with appId={}",
+                        packet.client_id,
+                        packet.target_id,
+                        self.config.controller_id,
+                        app_id
+                    );
                     Self::send_packet(
                         ws_write,
                         &SocketPacket::bind_result(
@@ -489,5 +513,10 @@ impl DglabWsServer {
         let text = serde_json::to_string(packet)?;
         ws_write.send(Message::Text(text.into())).await?;
         Ok(())
+    }
+
+    fn is_controller_app_pair(&self, client_id: &str, target_id: &str, app_id: &str) -> bool {
+        (client_id == self.config.controller_id && target_id == app_id)
+            || (client_id == app_id && target_id == self.config.controller_id)
     }
 }

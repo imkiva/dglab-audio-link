@@ -1,4 +1,5 @@
-use crate::dglab::pairing;
+use crate::dglab::protocol::StrengthReport;
+use crate::dglab::{pairing, protocol::StrengthControlMode};
 use crate::domain::{
     BAND_COUNT,
     types::{BandRouting, DglabChannel, StrengthRange},
@@ -10,6 +11,20 @@ pub struct AppState {
     pub band_routing: [BandRouting; BAND_COUNT],
     pub band_values: [f32; BAND_COUNT],
     pub strength_range: StrengthRange,
+    pub debug_strength_channel: DglabChannel,
+    pub debug_strength_mode: StrengthControlMode,
+    pub debug_strength_value: u16,
+    pub debug_clear_channel: DglabChannel,
+    pub debug_pulse_channel: DglabChannel,
+    pub debug_pulse_values: String,
+    pub last_protocol_action: Option<String>,
+    pub app_connected: bool,
+    pub app_bound: bool,
+    pub app_id: Option<String>,
+    pub app_strength_report: Option<StrengthReport>,
+    pub auto_limit_with_app_soft_limit: bool,
+    pub last_app_message: Option<String>,
+    pub last_server_info: Option<String>,
     pub running: bool,
     pub last_error: Option<String>,
 }
@@ -26,6 +41,21 @@ impl Default for AppState {
             ],
             band_values: [0.0; BAND_COUNT],
             strength_range: StrengthRange::new(10, 160),
+            debug_strength_channel: DglabChannel::A,
+            debug_strength_mode: StrengthControlMode::SetValue,
+            debug_strength_value: 50,
+            debug_clear_channel: DglabChannel::A,
+            debug_pulse_channel: DglabChannel::A,
+            debug_pulse_values:
+                "0A0A0A0A0A0A0A0A 0A0A0A0A0A0A0A0A 0A0A0A0A0A0A0A0A 0A0A0A0A0A0A0A0A".to_owned(),
+            last_protocol_action: None,
+            app_connected: false,
+            app_bound: false,
+            app_id: None,
+            app_strength_report: None,
+            auto_limit_with_app_soft_limit: true,
+            last_app_message: None,
+            last_server_info: None,
             running: false,
             last_error: None,
         }
@@ -39,6 +69,43 @@ impl AppState {
 
     pub fn set_error(&mut self, message: impl Into<String>) {
         self.last_error = Some(message.into());
+    }
+
+    pub fn set_protocol_action(&mut self, message: impl Into<String>) {
+        self.last_protocol_action = Some(message.into());
+    }
+
+    pub fn app_soft_limit_for_channel(&self, channel: DglabChannel) -> Option<u16> {
+        let report = self.app_strength_report?;
+        match channel {
+            DglabChannel::A => Some(report.a_soft_limit),
+            DglabChannel::B => Some(report.b_soft_limit),
+        }
+    }
+
+    pub fn app_current_strength_for_channel(&self, channel: DglabChannel) -> Option<u16> {
+        let report = self.app_strength_report?;
+        match channel {
+            DglabChannel::A => Some(report.a_strength),
+            DglabChannel::B => Some(report.b_strength),
+        }
+    }
+
+    pub fn effective_global_strength_slider_max(&self) -> u16 {
+        if !self.auto_limit_with_app_soft_limit {
+            return 200;
+        }
+
+        self.app_strength_report
+            .map(|report| report.a_soft_limit.min(report.b_soft_limit))
+            .unwrap_or(200)
+    }
+
+    pub fn effective_debug_strength_slider_max(&self, channel: DglabChannel) -> u16 {
+        if !self.auto_limit_with_app_soft_limit {
+            return 200;
+        }
+        self.app_soft_limit_for_channel(channel).unwrap_or(200)
     }
 
     pub fn rotate_session_id(&mut self) {

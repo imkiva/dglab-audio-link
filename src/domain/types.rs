@@ -14,6 +14,20 @@ impl DglabChannel {
             Self::B => "B",
         }
     }
+
+    pub const fn pulse_symbol(self) -> &'static str {
+        match self {
+            Self::A => "A",
+            Self::B => "B",
+        }
+    }
+
+    pub const fn strength_channel_id(self) -> u8 {
+        match self {
+            Self::A => 1,
+            Self::B => 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

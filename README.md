@@ -45,6 +45,10 @@ src/
 - GUI provides `Use Local LAN IP` to refresh host address while preserving port/session path.
 - Program startup automatically launches the local websocket server (`0.0.0.0:<port>`).
 - GUI contains pairing QR generation for `https://www.dungeon-lab.com/app-download.php#DGLAB-SOCKET#<ws-url>`.
+- GUI contains a manual protocol debug panel to send `strength-*`, `clear-*`, and `pulse-*`.
+- GUI syncs app-reported `strength-a+b+softA+softB` and can auto-limit strength sliders by soft limits.
+- Manual send now avoids silent fail: checks app bind state and outbound JSON length (`<=1950`) before sending.
+- Pulse debug input now uses 16-hex items per frame (e.g. `0A0A0A0A00000000`).
 - GUI contains fields for websocket URL, 4 bands, thresholds, A/B mapping, and strength range (`0..200`).
 - Websocket server now handles DGLab protocol flow: connect -> bind(targetId) -> bind(DGLAB) -> bind(200), heartbeat, msg validation and error codes.
 - Signal mapping logic has basic unit tests.
