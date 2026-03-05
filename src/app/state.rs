@@ -4,9 +4,11 @@ use crate::domain::{
     BAND_COUNT,
     types::{BandRouting, DglabChannel, StrengthRange},
 };
+use crate::app::i18n::UiLanguage;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
+    pub language: UiLanguage,
     pub websocket_url: String,
     pub band_routing: [BandRouting; BAND_COUNT],
     pub band_values: [f32; BAND_COUNT],
@@ -37,6 +39,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            language: UiLanguage::default(),
             websocket_url: pairing::default_ws_url(),
             band_routing: [
                 BandRouting::new(true, 0.25, DglabChannel::A),

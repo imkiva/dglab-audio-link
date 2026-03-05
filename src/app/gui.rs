@@ -5,6 +5,7 @@ use qrcodegen::{QrCode, QrCodeEcc};
 use tokio::runtime::Runtime;
 
 use crate::{
+    app::i18n::{UiLanguage, tr},
     app::state::AppState,
     audio::capture::{default_output_device_name, list_output_device_names},
     dglab::{
@@ -73,7 +74,7 @@ pub fn install_cjk_font(ctx: &egui::Context) {
 }
 
 impl DgLinkGuiApp {
-    pub fn new(runtime: Arc<Runtime>) -> Self {
+    pub fn new(runtime: Arc<Runtime>, language: UiLanguage) -> Self {
         let mut app = Self {
             state: AppState::default(),
             engine: PipelineEngine::new(runtime),
@@ -82,42 +83,67 @@ impl DgLinkGuiApp {
             last_qr_payload: String::new(),
             prev_app_bound: false,
         };
+        app.state.language = language;
         app.refresh_output_device_list();
         app.start_engine();
         app
     }
 
+    fn tr(&self, en: &'static str, zh_cn: &'static str) -> &'static str {
+        tr(self.state.language, en, zh_cn)
+    }
+
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Program WS URL:");
+        ui.horizontal(|ui| {
+            ui.label(self.tr("Program WS URL:", "程序 WS 地址："));
             ui.text_edit_singleline(&mut self.state.websocket_url);
 
-            if ui.button("Use Local LAN IP").clicked() {
+            ui.label(self.tr("Language:", "语言："));
+            egui::ComboBox::from_id_salt("ui_language")
+                .selected_text(self.state.language.label())
+                .show_ui(ui, |ui| {
+                    for language in UiLanguage::all() {
+                        ui.selectable_value(&mut self.state.language, language, language.label());
+                    }
+                });
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .button(self.tr("Use Local LAN IP", "使用本机局域网 IP"))
+                .clicked()
+            {
                 self.state.clear_error();
                 if !self.state.refresh_lan_ws_url() {
                     self.state.set_error(
-                        "No LAN IPv4 detected. URL fell back to 127.0.0.1 (phone cannot connect).",
+                        self.tr(
+                            "No LAN IPv4 detected. URL fell back to 127.0.0.1 (phone cannot connect).",
+                            "未检测到局域网 IPv4，地址已回退到 127.0.0.1（手机无法连接）。",
+                        ),
                     );
                 }
                 self.last_qr_payload.clear();
                 self.restart_engine_if_running();
             }
 
-            if ui.button("New Session UUID").clicked() {
+            if ui
+                .button(self.tr("New Session UUID", "新建会话 UUID"))
+                .clicked()
+            {
                 self.state.rotate_session_id();
                 self.last_qr_payload.clear();
                 self.restart_engine_if_running();
             }
 
-            if ui.button("Copy QR Payload").clicked() {
+            if ui.button(self.tr("Copy QR Payload", "复制二维码内容")).clicked() {
                 ui.ctx()
                     .copy_text(pairing::build_qr_payload(&self.state.websocket_url));
             }
 
             let button_label = if self.engine.is_running() {
-                "Stop WS Server"
+                self.tr("Stop WS Server", "停止 WS 服务")
             } else {
-                "Start WS Server"
+                self.tr("Start WS Server", "启动 WS 服务")
             };
 
             if ui.button(button_label).clicked() {
@@ -137,7 +163,10 @@ impl DgLinkGuiApp {
 
     fn draw_pairing_panel(&mut self, ui: &mut egui::Ui) {
         let qr_payload = pairing::build_qr_payload(&self.state.websocket_url);
-        ui.label("Scan this QR code in the mobile app to connect.");
+        ui.label(self.tr(
+            "Scan this QR code in the mobile app to connect.",
+            "请在手机 App 中扫码连接。",
+        ));
         ui.code(qr_payload.as_str());
 
         if let Some(texture) = &self.qr_texture {
@@ -151,50 +180,81 @@ impl DgLinkGuiApp {
         if pairing::ws_url_uses_loopback(&self.state.websocket_url) {
             ui.colored_label(
                 egui::Color32::from_rgb(200, 40, 40),
-                "Current host is loopback. Use 'Use Local LAN IP' before scanning.",
+                self.tr(
+                    "Current host is loopback. Use 'Use Local LAN IP' before scanning.",
+                    "当前主机地址是回环地址。扫码前请先点“使用本机局域网 IP”。",
+                ),
             );
         } else {
-            ui.small("WS URL should be a LAN IP reachable from your phone.");
+            ui.small(self.tr(
+                "WS URL should be a LAN IP reachable from your phone.",
+                "WS 地址应为手机可访问的局域网 IP。",
+            ));
         }
 
         let server_text = if self.engine.is_running() {
-            "WS server status: running"
+            self.tr("WS server status: running", "WS 服务状态：运行中")
         } else {
-            "WS server status: stopped"
+            self.tr("WS server status: stopped", "WS 服务状态：已停止")
         };
         ui.small(server_text);
 
         let app_status = if self.state.app_bound {
             format!(
-                "App status: bound (app_id={})",
+                "{} (app_id={})",
+                self.tr("App status: bound", "App 状态：已绑定"),
                 self.state.app_id.as_deref().unwrap_or("?")
             )
         } else if self.state.app_connected {
-            "App status: connected, waiting bind".to_owned()
+            self.tr("App status: connected, waiting bind", "App 状态：已连接，等待绑定")
+                .to_owned()
         } else {
-            "App status: not connected".to_owned()
+            self.tr("App status: not connected", "App 状态：未连接")
+                .to_owned()
         };
         ui.small(app_status);
 
         if let Some(info) = &self.state.last_server_info {
-            ui.small(format!("Server info: {info}"));
+            ui.small(format!("{}: {info}", self.tr("Server info", "服务信息")));
         }
 
         let audio_status = if self.state.audio_capture_running {
             format!(
-                "Audio capture: running ({})",
+                "{} ({})",
+                self.tr("Audio capture: running", "音频采集：运行中"),
                 self.state
                     .audio_input_device
                     .as_deref()
-                    .unwrap_or("<unknown input device>")
+                    .unwrap_or(self.tr("<unknown input device>", "<未知输入设备>"))
             )
         } else {
-            "Audio capture: stopped/unavailable".to_owned()
+            self.tr(
+                "Audio capture: stopped/unavailable",
+                "音频采集：已停止/不可用",
+            )
+            .to_owned()
         };
         ui.small(audio_status);
     }
 
     fn draw_strength_range(&mut self, ui: &mut egui::Ui) {
+        let title = self.tr("DGLab Strength Range (A/B, 0-200)", "DGLab 强度范围（A/B，0-200）");
+        let auto_limit_label =
+            self.tr("Auto-limit sliders by App soft limit", "按 App 软上限自动限制滑块");
+        let channel_a_label = self.tr("Channel A", "A 通道");
+        let channel_b_label = self.tr("Channel B", "B 通道");
+        let min_label = self.tr("Min", "最小");
+        let max_label = self.tr("Max", "最大");
+        let app_strength_label = self.tr("App strength", "App 强度");
+        let no_report_label = self.tr(
+            "No app strength report yet. Send/receive once after bind.",
+            "暂未收到 App 强度上报。绑定后收发一次即可同步。",
+        );
+        let soft_limit_note_label = self.tr(
+            "Current max limited by App soft limit",
+            "当前最大值受 App 软上限限制",
+        );
+
         let slider_max_a = self
             .state
             .effective_strength_slider_max_for_channel(DglabChannel::A);
@@ -216,48 +276,50 @@ impl DgLinkGuiApp {
             .min(self.state.strength_range_b.max);
 
         ui.group(|ui| {
-            ui.label("DGLab Strength Range (A/B, 0-200)");
+            ui.label(title);
             ui.checkbox(
                 &mut self.state.auto_limit_with_app_soft_limit,
-                "Auto-limit sliders by App soft limit",
+                auto_limit_label,
             );
 
             ui.columns(2, |columns| {
-                columns[0].label("Channel A");
+                columns[0].label(channel_a_label);
                 columns[0].add(
                     egui::Slider::new(&mut self.state.strength_range_a.min, 0..=slider_max_a)
-                        .text("Min"),
+                        .text(min_label),
                 );
                 columns[0].add(
                     egui::Slider::new(&mut self.state.strength_range_a.max, 0..=slider_max_a)
-                        .text("Max"),
+                        .text(max_label),
                 );
                 self.state.strength_range_a = self.state.strength_range_a.normalized();
 
-                columns[1].label("Channel B");
+                columns[1].label(channel_b_label);
                 columns[1].add(
                     egui::Slider::new(&mut self.state.strength_range_b.min, 0..=slider_max_b)
-                        .text("Min"),
+                        .text(min_label),
                 );
                 columns[1].add(
                     egui::Slider::new(&mut self.state.strength_range_b.max, 0..=slider_max_b)
-                        .text("Max"),
+                        .text(max_label),
                 );
                 self.state.strength_range_b = self.state.strength_range_b.normalized();
             });
 
             if let Some(report) = self.state.app_strength_report {
                 ui.small(format!(
-                    "App strength A:{} B:{} | soft A:{} B:{}",
+                    "{} A:{} B:{} | soft A:{} B:{}",
+                    app_strength_label,
                     report.a_strength, report.b_strength, report.a_soft_limit, report.b_soft_limit
                 ));
             } else {
-                ui.small("No app strength report yet. Send/receive once after bind.");
+                ui.small(no_report_label);
             }
 
             if slider_max_a < 200 || slider_max_b < 200 {
                 ui.small(format!(
-                    "Current max limited by App soft limit: A={slider_max_a}, B={slider_max_b}"
+                    "{}: A={slider_max_a}, B={slider_max_b}",
+                    soft_limit_note_label
                 ));
             }
         });
@@ -265,11 +327,14 @@ impl DgLinkGuiApp {
 
     fn draw_speaker_source_panel(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
-            ui.label("Audio Source (Speaker Loopback)");
-            ui.small("Capture source is speaker playback loopback, not microphone.");
+            ui.label(self.tr("Audio Source (Speaker Loopback)", "音频源（扬声器回环）"));
+            ui.small(self.tr(
+                "Capture source is speaker playback loopback, not microphone.",
+                "采集源是扬声器播放回环，不是麦克风。",
+            ));
 
             ui.horizontal(|ui| {
-                if ui.button("Refresh Speakers").clicked() {
+                if ui.button(self.tr("Refresh Speakers", "刷新扬声器")).clicked() {
                     self.refresh_output_device_list();
                 }
 
@@ -277,8 +342,8 @@ impl DgLinkGuiApp {
                     .state
                     .selected_output_device
                     .as_deref()
-                    .unwrap_or("Auto (Default Speaker)");
-                ui.small(format!("Selected: {active}"));
+                    .unwrap_or(self.tr("Auto (Default Speaker)", "自动（默认扬声器）"));
+                ui.small(format!("{}: {active}", self.tr("Selected", "已选择")));
             });
 
             let auto_key = "__AUTO__".to_owned();
@@ -288,7 +353,8 @@ impl DgLinkGuiApp {
                 .clone()
                 .unwrap_or_else(|| auto_key.clone());
             let selected_label = if selected_key == auto_key {
-                "Auto (Default Speaker)".to_owned()
+                self.tr("Auto (Default Speaker)", "自动（默认扬声器）")
+                    .to_owned()
             } else {
                 selected_key.clone()
             };
@@ -299,7 +365,7 @@ impl DgLinkGuiApp {
                     ui.selectable_value(
                         &mut selected_key,
                         auto_key.clone(),
-                        "Auto (Default Speaker)",
+                        self.tr("Auto (Default Speaker)", "自动（默认扬声器）"),
                     );
                     for name in &self.state.available_output_devices {
                         ui.selectable_value(&mut selected_key, name.clone(), name);
@@ -314,38 +380,54 @@ impl DgLinkGuiApp {
             if next_selection != self.state.selected_output_device {
                 let selected_text = next_selection
                     .as_deref()
-                    .unwrap_or("default")
+                    .unwrap_or(self.tr("default", "默认"))
                     .to_owned();
                 self.state.selected_output_device = next_selection;
                 self.state
-                    .set_protocol_action(format!("speaker source switched to {selected_text}"));
+                    .set_protocol_action(format!(
+                        "{} {selected_text}",
+                        self.tr("speaker source switched to", "扬声器源已切换到")
+                    ));
             }
 
             if self.state.available_output_devices.is_empty() {
-                ui.small("No output speaker device found.");
+                ui.small(self.tr("No output speaker device found.", "未找到输出扬声器设备。"));
             } else {
                 ui.small(format!(
-                    "Detected output speakers: {}",
+                    "{}: {}",
+                    self.tr("Detected output speakers", "检测到输出扬声器数量"),
                     self.state.available_output_devices.len()
                 ));
             }
 
             if let Some(default_name) = default_output_device_name() {
-                ui.small(format!("System default speaker: {default_name}"));
+                ui.small(format!(
+                    "{}: {default_name}",
+                    self.tr("System default speaker", "系统默认扬声器")
+                ));
             }
         });
     }
 
     fn draw_protocol_debug_panel(&mut self, ui: &mut egui::Ui) {
+        let value_label = self.tr("Value", "数值");
+        let pulse_hint = self.tr(
+            "Pulse HEX list, e.g. 0A0A0A0A00000000 0A0A0A0A0A0A0A0A",
+            "波形 HEX 列表，例如 0A0A0A0A00000000 0A0A0A0A0A0A0A0A",
+        );
+
         let debug_strength_max = self
             .state
             .effective_debug_strength_slider_max(self.state.debug_strength_channel);
         self.state.debug_strength_value = self.state.debug_strength_value.min(debug_strength_max);
 
-        ui.small("Send raw control messages to App after bind. Fails will be shown explicitly.");
+        ui.small(self.tr(
+            "Send raw control messages to App after bind. Fails will be shown explicitly.",
+            "绑定后可向 App 发送原始控制消息，失败会明确显示。",
+        ));
 
             ui.horizontal(|ui| {
-                ui.label("Strength");
+                ui.label(self.tr("Strength", "强度"));
                 egui::ComboBox::from_id_salt("debug_strength_channel")
                     .selected_text(self.state.debug_strength_channel.label())
                     .show_ui(ui, |ui| {
@@ -383,16 +465,16 @@ impl DgLinkGuiApp {
 
                 ui.add(
                     egui::Slider::new(&mut self.state.debug_strength_value, 0..=debug_strength_max)
-                        .text("Value"),
+                        .text(value_label),
                 );
 
-                if ui.button("Send Strength").clicked() {
+                if ui.button(self.tr("Send Strength", "发送强度")).clicked() {
                     self.send_debug_strength_message();
                 }
             });
 
             ui.horizontal(|ui| {
-                ui.label("Clear");
+                ui.label(self.tr("Clear", "清空"));
                 egui::ComboBox::from_id_salt("debug_clear_channel")
                     .selected_text(self.state.debug_clear_channel.label())
                     .show_ui(ui, |ui| {
@@ -408,14 +490,14 @@ impl DgLinkGuiApp {
                         );
                     });
 
-                if ui.button("Send Clear").clicked() {
+                if ui.button(self.tr("Send Clear", "发送清空")).clicked() {
                     let message = build_clear_message(self.state.debug_clear_channel);
                     self.send_manual_protocol_message(message, None);
                 }
             });
 
             ui.horizontal(|ui| {
-                ui.label("Pulse");
+                ui.label(self.tr("Pulse", "波形"));
                 egui::ComboBox::from_id_salt("debug_pulse_channel")
                     .selected_text(self.state.debug_pulse_channel.label())
                     .show_ui(ui, |ui| {
@@ -431,13 +513,13 @@ impl DgLinkGuiApp {
                         );
                     });
 
-                if ui.button("Load Sample").clicked() {
+                if ui.button(self.tr("Load Sample", "加载示例")).clicked() {
                     self.state.debug_pulse_values =
                         "0A0A0A0A0A0A0A0A 0A0A0A0A0A0A0A0A 0A0A0A0A0A0A0A0A 0A0A0A0A0A0A0A0A"
                             .to_owned();
                 }
 
-                if ui.button("Send Pulse").clicked() {
+                if ui.button(self.tr("Send Pulse", "发送波形")).clicked() {
                     match build_pulse_message(
                         self.state.debug_pulse_channel,
                         &self.state.debug_pulse_values,
@@ -448,7 +530,10 @@ impl DgLinkGuiApp {
                                 .app_current_strength_for_channel(self.state.debug_pulse_channel)
                                 .and_then(|current| {
                                     if current == 0 {
-                                        Some("channel strength is currently 0; pulse can be queued but output may be silent".to_owned())
+                                        Some(self.tr(
+                                            "channel strength is currently 0; pulse can be queued but output may be silent",
+                                            "当前通道强度为 0；波形可入队，但实际输出可能无感",
+                                        ).to_owned())
                                     } else {
                                         None
                                     }
@@ -462,35 +547,54 @@ impl DgLinkGuiApp {
 
             ui.add(
                 egui::TextEdit::multiline(&mut self.state.debug_pulse_values)
-                    .hint_text("Pulse HEX list, e.g. 0A0A0A0A00000000 0A0A0A0A0A0A0A0A")
+                    .hint_text(pulse_hint)
                     .desired_rows(3),
             );
-            ui.small("Pulse HEX format: 16 hex chars each. Split by spaces, comma, semicolon or new line.");
+            ui.small(self.tr(
+                "Pulse HEX format: 16 hex chars each. Split by spaces, comma, semicolon or new line.",
+                "波形 HEX 格式：每项 16 位十六进制，用空格/逗号/分号/换行分隔。",
+            ));
 
             if let Some(last) = &self.state.last_protocol_action {
-                ui.small(format!("Last action: {last}"));
+                ui.small(format!("{}: {last}", self.tr("Last action", "最近操作")));
             }
             if let Some(last_app) = &self.state.last_app_message {
-                ui.small(format!("Last app msg: {last_app}"));
+                ui.small(format!(
+                    "{}: {last_app}",
+                    self.tr("Last app msg", "最近 App 消息")
+                ));
             }
     }
 
     fn draw_band_editor(&mut self, ui: &mut egui::Ui) {
+        let language = self.state.language;
         ui.group(|ui| {
-            ui.label("Band Routing (4 bands)");
+            ui.label(self.tr("Band Routing (4 bands)", "频段路由（4 个频段）"));
             for index in 0..BAND_COUNT {
                 let band_value = self.state.band_values[index];
                 let routing = &mut self.state.band_routing[index];
-                Self::draw_band_row(ui, index, routing, band_value);
+                Self::draw_band_row(language, ui, index, routing, band_value);
                 ui.separator();
             }
         });
     }
 
-    fn draw_band_row(ui: &mut egui::Ui, index: usize, routing: &mut BandRouting, band_value: f32) {
+    fn draw_band_row(
+        language: UiLanguage,
+        ui: &mut egui::Ui,
+        index: usize,
+        routing: &mut BandRouting,
+        band_value: f32,
+    ) {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut routing.enabled, format!("Band {}", index + 1));
-            ui.add(egui::Slider::new(&mut routing.threshold, 0.0..=1.0).text("Trigger"));
+            ui.checkbox(
+                &mut routing.enabled,
+                format!("{} {}", tr(language, "Band", "频段"), index + 1),
+            );
+            ui.add(
+                egui::Slider::new(&mut routing.threshold, 0.0..=1.0)
+                    .text(tr(language, "Trigger", "触发值")),
+            );
             routing.threshold = routing.threshold.clamp(0.0, 1.0);
 
             egui::ComboBox::from_id_salt(format!("band_channel_{index}"))
@@ -571,7 +675,7 @@ impl DgLinkGuiApp {
                 self.state.available_output_devices.clear();
                 self.state.selected_output_device = None;
                 self.state
-                    .set_error(format!("failed to enumerate speakers: {err}"));
+                    .set_error(format!("{}: {err}", self.tr("failed to enumerate speakers", "枚举扬声器失败")));
             }
         }
     }
@@ -584,7 +688,8 @@ impl DgLinkGuiApp {
             }
             Err(err) => {
                 self.state.running = false;
-                self.state.set_error(err.to_string());
+                self.state
+                    .set_error(format!("{}: {err}", self.tr("start failed", "启动失败")));
             }
         }
     }
@@ -602,7 +707,7 @@ impl DgLinkGuiApp {
             Err(err) => {
                 self.state.running = false;
                 self.state
-                    .set_error(format!("failed to restart ws server: {err}"));
+                    .set_error(format!("{}: {err}", self.tr("failed to restart ws server", "重启 WS 服务失败")));
             }
         }
     }
@@ -621,12 +726,20 @@ impl DgLinkGuiApp {
                         if effective > soft_limit {
                             effective = soft_limit;
                             note = Some(format!(
-                                "clamped to app soft limit ({soft_limit}) for channel {}",
+                                "{} ({soft_limit}) {} {}",
+                                self.tr("clamped to app soft limit", "已按 App 软上限限幅"),
+                                self.tr("for channel", "通道"),
                                 channel.label()
                             ));
                         }
                     } else {
-                        note = Some("app soft limit unknown; no clamp applied".to_owned());
+                        note = Some(
+                            self.tr(
+                                "app soft limit unknown; no clamp applied",
+                                "App 软上限未知；未做限幅",
+                            )
+                            .to_owned(),
+                        );
                     }
                 }
                 StrengthControlMode::Increase => {
@@ -637,17 +750,26 @@ impl DgLinkGuiApp {
                         let max_delta = soft_limit.saturating_sub(current);
                         if max_delta == 0 {
                             self.state.set_error(format!(
-                                "channel {} already at soft limit {soft_limit}; increase skipped",
+                                "{} {} {} {soft_limit}，{}",
+                                self.tr("channel", "通道"),
                                 channel.label()
+                                ,
+                                self.tr("already at soft limit", "已到软上限"),
+                                self.tr("increase skipped", "已跳过增加"),
                             ));
                             self.state
-                                .set_protocol_action("send skipped by local guard".to_owned());
+                                .set_protocol_action(self.tr("send skipped by local guard", "被本地保护逻辑拦截发送").to_owned());
                             return;
                         }
                         if effective > max_delta {
                             effective = max_delta;
                             note = Some(format!(
-                                "increase clamped to {max_delta} (current {current}, soft {soft_limit})"
+                                "{} {max_delta} ({}, {}, {}, {})",
+                                self.tr("increase clamped to", "增加量已限幅到"),
+                                self.tr("current", "当前"),
+                                current,
+                                self.tr("soft", "软上限"),
+                                soft_limit
                             ));
                         }
                     }
@@ -656,7 +778,13 @@ impl DgLinkGuiApp {
                     if let Some(current) = self.state.app_current_strength_for_channel(channel) {
                         if effective > current {
                             effective = current;
-                            note = Some(format!("decrease clamped to current strength {current}"));
+                            note = Some(format!(
+                                "{} {current}",
+                                self.tr(
+                                    "decrease clamped to current strength",
+                                    "减少量已限幅到当前强度"
+                                )
+                            ));
                         }
                     }
                 }
@@ -672,7 +800,10 @@ impl DgLinkGuiApp {
         let message_for_status = message.clone();
         match self.engine.send_app_message(message) {
             Ok(()) => {
-                let mut action = format!("sent {message_for_status}");
+                let mut action = format!(
+                    "{} {message_for_status}",
+                    self.tr("sent", "已发送")
+                );
                 if let Some(note) = note {
                     action.push_str(" (");
                     action.push_str(&note);
@@ -681,9 +812,13 @@ impl DgLinkGuiApp {
                 self.state.set_protocol_action(action);
             }
             Err(err) => {
-                self.state.set_error(err.to_string());
                 self.state
-                    .set_protocol_action(format!("send failed: {message_for_status}"));
+                    .set_error(format!("{}: {err}", self.tr("send failed", "发送失败")));
+                self.state
+                    .set_protocol_action(format!(
+                        "{}: {message_for_status}",
+                        self.tr("send failed", "发送失败")
+                    ));
             }
         }
     }
@@ -756,10 +891,13 @@ impl eframe::App for DgLinkGuiApp {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.heading("DG-Lab Audio Link");
-                    ui.label("Windows speaker output -> 4-band analysis -> DGLab A/B waveform output");
+                    ui.heading(self.tr("DG-Lab Audio Link", "DG-Lab 音频联动"));
+                    ui.label(self.tr(
+                        "Windows speaker output -> 4-band analysis -> DGLab A/B waveform output",
+                        "Windows 扬声器输出 -> 4 频段分析 -> DGLab A/B 波形输出",
+                    ));
                     ui.separator();
-                    egui::CollapsingHeader::new("DGLab 3.0 Pairing QR")
+                    egui::CollapsingHeader::new(self.tr("DGLab 3.0 Pairing QR", "DGLab 3.0 配对二维码"))
                         .id_salt("pairing_qr_panel")
                         .default_open(true)
                         .open(if collapse_pairing_now {
@@ -771,7 +909,7 @@ impl eframe::App for DgLinkGuiApp {
                             self.draw_pairing_panel(ui);
                         });
                     ui.separator();
-                    egui::CollapsingHeader::new("Protocol Debug (Manual)")
+                    egui::CollapsingHeader::new(self.tr("Protocol Debug (Manual)", "协议调试（手动）"))
                         .default_open(false)
                         .show(ui, |ui| {
                             self.draw_protocol_debug_panel(ui);

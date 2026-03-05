@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
     init_logging();
+    let language = app::i18n::detect_system_language();
 
     let runtime = Arc::new(
         tokio::runtime::Builder::new_multi_thread()
@@ -27,11 +28,14 @@ fn main() -> Result<()> {
     };
 
     eframe::run_native(
-        "DG-Lab Audio Link",
+        language.app_title(),
         native_options,
         Box::new(move |cc| {
             app::gui::install_cjk_font(&cc.egui_ctx);
-            Ok(Box::new(app::gui::DgLinkGuiApp::new(runtime.clone())))
+            Ok(Box::new(app::gui::DgLinkGuiApp::new(
+                runtime.clone(),
+                language,
+            )))
         }),
     )
     .map_err(|err| anyhow!(err.to_string()))?;

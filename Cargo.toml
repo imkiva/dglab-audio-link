@@ -19,3 +19,4 @@ qrcodegen = "1.8"
 uuid = { version = "1.11", features = ["v4"] }
 cpal = "0.17"
 rustfft = "6"
+sys-locale = "0.3"
