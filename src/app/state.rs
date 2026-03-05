@@ -25,6 +25,10 @@ pub struct AppState {
     pub auto_limit_with_app_soft_limit: bool,
     pub last_app_message: Option<String>,
     pub last_server_info: Option<String>,
+    pub audio_capture_running: bool,
+    pub audio_input_device: Option<String>,
+    pub available_output_devices: Vec<String>,
+    pub selected_output_device: Option<String>,
     pub running: bool,
     pub last_error: Option<String>,
 }
@@ -56,6 +60,10 @@ impl Default for AppState {
             auto_limit_with_app_soft_limit: true,
             last_app_message: None,
             last_server_info: None,
+            audio_capture_running: false,
+            audio_input_device: None,
+            available_output_devices: Vec::new(),
+            selected_output_device: None,
             running: false,
             last_error: None,
         }

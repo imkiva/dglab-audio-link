@@ -49,7 +49,14 @@ src/
 - GUI syncs app-reported `strength-a+b+softA+softB` and can auto-limit strength sliders by soft limits.
 - Manual send now avoids silent fail: checks app bind state and outbound JSON length (`<=1950`) before sending.
 - Pulse debug input now uses 16-hex items per frame (e.g. `0A0A0A0A00000000`).
+- Pipeline now runs automatic audio-reactive output:
+  - Windows speaker-loopback capture (system playback, not microphone input).
+  - GUI can pick preferred speaker output and hot-switch capture target.
+  - FFT-based 4-band analyzer.
+  - Per-band trigger and A/B routing mapping.
+  - Auto send `strength-*`, `pulse-*`, `clear-*` to DGLab app when bound.
+  - Auto strength can clamp by app soft limit to reduce silent drop risk.
+  - Auto pulse uses stable sample frame `0A0A0A0A0A0A0A0A`.
 - GUI contains fields for websocket URL, 4 bands, thresholds, A/B mapping, and strength range (`0..200`).
 - Websocket server now handles DGLab protocol flow: connect -> bind(targetId) -> bind(DGLAB) -> bind(200), heartbeat, msg validation and error codes.
 - Signal mapping logic has basic unit tests.
-- Audio capture remains a scaffold for the next implementation step.

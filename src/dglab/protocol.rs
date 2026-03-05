@@ -68,7 +68,21 @@ pub fn build_pulse_message(channel: DglabChannel, raw_hex_items: &str) -> Result
             continue;
         }
         let normalized = item.to_ascii_uppercase();
-        if normalized.len() != PULSE_HEX_CHARS || !normalized.chars().all(|c| c.is_ascii_hexdigit())
+        items.push(normalized);
+    }
+
+    build_pulse_message_from_items(channel, &items)
+}
+
+pub fn build_pulse_message_from_items(
+    channel: DglabChannel,
+    raw_items: &[String],
+) -> Result<String, String> {
+    let mut items = Vec::with_capacity(raw_items.len());
+    for item in raw_items {
+        let normalized = item.trim().to_ascii_uppercase();
+        if normalized.len() != PULSE_HEX_CHARS
+            || !normalized.chars().all(|c| c.is_ascii_hexdigit())
         {
             return Err(format!(
                 "invalid pulse item `{item}`. each item must be 16 HEX chars, e.g. 0A0A0A0A00000000"
@@ -100,7 +114,13 @@ pub struct StrengthReport {
 }
 
 pub fn parse_strength_report(message: &str) -> Option<StrengthReport> {
-    let payload = message.trim().strip_prefix("strength-")?;
+    let trimmed = message.trim();
+    let prefix = trimmed.get(..9)?;
+    if !prefix.eq_ignore_ascii_case("strength-") {
+        return None;
+    }
+
+    let payload = trimmed.get(9..)?;
     let mut parts = payload.split('+');
     let a_strength = parts.next()?.parse::<u16>().ok()?;
     let b_strength = parts.next()?.parse::<u16>().ok()?;
@@ -284,6 +304,15 @@ mod tests {
     #[test]
     fn parses_strength_report() {
         let report = parse_strength_report("strength-11+7+100+35").expect("must parse");
+        assert_eq!(report.a_strength, 11);
+        assert_eq!(report.b_strength, 7);
+        assert_eq!(report.a_soft_limit, 100);
+        assert_eq!(report.b_soft_limit, 35);
+    }
+
+    #[test]
+    fn parses_strength_report_case_insensitive_prefix() {
+        let report = parse_strength_report("StReNgTh-11+7+100+35").expect("must parse");
         assert_eq!(report.a_strength, 11);
         assert_eq!(report.b_strength, 7);
         assert_eq!(report.a_soft_limit, 100);

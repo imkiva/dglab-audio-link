@@ -1,22 +1,73 @@
-use std::sync::{Arc, Mutex};
+use std::{sync::{Arc, Mutex}, time::Duration};
 
 use anyhow::{Result, anyhow};
-use tokio::{runtime::Runtime, sync::watch, task::JoinHandle};
+use tokio::{runtime::Runtime, sync::{mpsc, watch}, task::JoinHandle};
 
-use crate::dglab::{
-    pairing,
-    protocol::{MAX_JSON_CHARS, SocketPacket, StrengthReport, parse_strength_report},
-    server::{DglabWsServer, DglabWsServerConfig, DglabWsServerControl, DglabWsServerEvent},
+use crate::{
+    audio::capture::{LoopbackCapture, LoopbackCaptureConfig},
+    dglab::{
+        pairing,
+        protocol::{
+            MAX_JSON_CHARS, SocketPacket, StrengthControlMode, StrengthReport,
+            build_clear_message, build_pulse_message_from_items, build_strength_message,
+            parse_strength_report,
+        },
+        server::{DglabWsServer, DglabWsServerConfig, DglabWsServerControl, DglabWsServerEvent},
+    },
+    domain::{BAND_COUNT, types::{BandRouting, DglabChannel, StrengthRange}},
+    signal::mapper::{aggregate_channel_strengths, compute_band_outputs},
 };
 
-#[derive(Debug, Clone, Default)]
+const DEFAULT_SEND_INTERVAL_MS: u64 = 300;
+
+#[derive(Debug, Clone)]
+pub struct PipelineSettings {
+    pub band_routing: [BandRouting; BAND_COUNT],
+    pub strength_range: StrengthRange,
+    pub pulse_items_per_message: usize,
+    pub respect_app_soft_limit: bool,
+    pub preferred_output_device_name: Option<String>,
+}
+
+impl Default for PipelineSettings {
+    fn default() -> Self {
+        Self {
+            band_routing: [BandRouting::default(); BAND_COUNT],
+            strength_range: StrengthRange::new(10, 160),
+            pulse_items_per_message: 3,
+            respect_app_soft_limit: true,
+            preferred_output_device_name: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct EngineSnapshot {
     pub app_connected: bool,
     pub app_bound: bool,
     pub app_id: Option<String>,
     pub latest_strength: Option<StrengthReport>,
+    pub latest_band_values: [f32; BAND_COUNT],
+    pub audio_capture_running: bool,
+    pub audio_input_device: Option<String>,
     pub last_app_message: Option<String>,
     pub last_server_info: Option<String>,
+}
+
+impl Default for EngineSnapshot {
+    fn default() -> Self {
+        Self {
+            app_connected: false,
+            app_bound: false,
+            app_id: None,
+            latest_strength: None,
+            latest_band_values: [0.0; BAND_COUNT],
+            audio_capture_running: false,
+            audio_input_device: None,
+            last_app_message: None,
+            last_server_info: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -26,6 +77,7 @@ pub struct PipelineEngine {
     server_control: Option<DglabWsServerControl>,
     server_status_rx: Option<watch::Receiver<crate::dglab::server::DglabWsServerStatus>>,
     snapshot: Arc<Mutex<EngineSnapshot>>,
+    settings: Arc<Mutex<PipelineSettings>>,
 }
 
 impl PipelineEngine {
@@ -36,6 +88,7 @@ impl PipelineEngine {
             server_control: None,
             server_status_rx: None,
             snapshot: Arc::new(Mutex::new(EngineSnapshot::default())),
+            settings: Arc::new(Mutex::new(PipelineSettings::default())),
         }
     }
 
@@ -43,6 +96,12 @@ impl PipelineEngine {
         self.worker
             .as_ref()
             .is_some_and(|handle| !handle.is_finished())
+    }
+
+    pub fn update_settings(&self, settings: PipelineSettings) {
+        if let Ok(mut current) = self.settings.lock() {
+            *current = settings;
+        }
     }
 
     pub fn start(&mut self, ws_url: &str) -> Result<()> {
@@ -58,19 +117,27 @@ impl PipelineEngine {
             .ok_or_else(|| anyhow!("invalid ws url. expected ws://<host>:<port>/<session-id>"))?;
         let bind_addr = format!("0.0.0.0:{}", parsed.port);
         let controller_id = parsed.session_id;
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<DglabWsServerEvent>();
+
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel::<DglabWsServerEvent>();
         let server = DglabWsServer::new(
             DglabWsServerConfig::new(bind_addr.clone(), controller_id.clone()),
             event_tx,
         );
         self.server_status_rx = Some(server.subscribe_status());
         self.server_control = Some(server.control());
+        let control_for_worker = self
+            .server_control
+            .clone()
+            .ok_or_else(|| anyhow!("server control is unavailable"))?;
 
         self.set_snapshot(|snapshot| {
             snapshot.app_connected = false;
             snapshot.app_bound = false;
             snapshot.app_id = None;
             snapshot.latest_strength = None;
+            snapshot.latest_band_values = [0.0; BAND_COUNT];
+            snapshot.audio_capture_running = false;
+            snapshot.audio_input_device = None;
             snapshot.last_app_message = None;
             snapshot.last_server_info = Some(format!(
                 "ws server starting on {bind_addr}, session={controller_id}"
@@ -78,82 +145,263 @@ impl PipelineEngine {
         });
 
         let snapshot = Arc::clone(&self.snapshot);
+        let settings = Arc::clone(&self.settings);
+
         self.worker = Some(self.runtime.spawn(async move {
             tracing::info!(
-                "dglab ws server worker start: bind={bind_addr}, controller_id={controller_id}"
+                "pipeline worker start: bind={bind_addr}, controller_id={controller_id}"
             );
 
-            let snapshot_for_events = Arc::clone(&snapshot);
-            let event_task = tokio::spawn(async move {
-                while let Some(event) = event_rx.recv().await {
-                    match event {
-                        DglabWsServerEvent::Connected {
-                            app_id,
-                            requested_path,
-                            peer_addr,
-                        } => {
-                            tracing::info!(
-                                "app connected: app_id={app_id}, path={requested_path}, peer={peer_addr}"
-                            );
-                            update_snapshot(&snapshot_for_events, |state| {
-                                state.app_connected = true;
-                                state.app_bound = false;
-                                state.app_id = Some(app_id.clone());
-                                state.last_server_info = Some(format!("app connected: {peer_addr}"));
-                            });
+            let mut app_bound = false;
+            let mut channel_active = [false; 2];
+            let mut last_strength = [0_u16; 2];
+            let mut latest_bands = [0.0_f32; BAND_COUNT];
+            let mut latest_soft_limits = [200_u16; 2];
+            let mut active_output_preference = settings
+                .lock()
+                .ok()
+                .and_then(|s| s.preferred_output_device_name.clone());
+
+            let (band_tx, mut band_rx) = mpsc::unbounded_channel::<[f32; BAND_COUNT]>();
+            let mut capture = LoopbackCapture::new(LoopbackCaptureConfig {
+                preferred_output_device_name: active_output_preference.clone(),
+                ..LoopbackCaptureConfig::default()
+            });
+            if let Err(err) = capture.start(band_tx.clone()) {
+                tracing::warn!("audio capture failed to start: {err}");
+                update_snapshot(&snapshot, |state| {
+                    state.audio_capture_running = false;
+                    state.audio_input_device = None;
+                    state.last_server_info = Some(format!("audio capture unavailable: {err}"));
+                });
+            } else {
+                let device_name = capture.selected_device_name().map(str::to_owned);
+                update_snapshot(&snapshot, |state| {
+                    state.audio_capture_running = true;
+                    state.audio_input_device = device_name.clone();
+                    state.last_server_info = Some(format!(
+                        "audio capture started on {} (speaker: {})",
+                        device_name.as_deref().unwrap_or("<unknown>"),
+                        active_output_preference
+                            .as_deref()
+                            .unwrap_or("default")
+                    ));
+                });
+            }
+
+            let mut server_task = tokio::spawn(async move { server.run().await });
+            let mut ticker = tokio::time::interval(Duration::from_millis(DEFAULT_SEND_INTERVAL_MS));
+
+            loop {
+                tokio::select! {
+                    server_result = &mut server_task => {
+                        match server_result {
+                            Ok(Ok(())) => tracing::info!("ws server task ended normally"),
+                            Ok(Err(err)) => {
+                                tracing::error!("ws server task failed: {err:?}");
+                                update_snapshot(&snapshot, |state| {
+                                    state.last_server_info = Some(format!("ws server error: {err}"));
+                                });
+                            }
+                            Err(join_err) => {
+                                tracing::error!("ws server task join error: {join_err}");
+                                update_snapshot(&snapshot, |state| {
+                                    state.last_server_info = Some(format!("ws server join error: {join_err}"));
+                                });
+                            }
                         }
-                        DglabWsServerEvent::Bound { app_id } => {
-                            tracing::info!("app bound success: app_id={app_id}");
-                            update_snapshot(&snapshot_for_events, |state| {
-                                state.app_connected = true;
-                                state.app_bound = true;
-                                state.app_id = Some(app_id.clone());
-                                state.last_server_info = Some("app bound (200)".to_owned());
-                            });
+                        break;
+                    }
+                    maybe_event = event_rx.recv() => {
+                        match maybe_event {
+                            Some(DglabWsServerEvent::Connected { app_id, requested_path, peer_addr }) => {
+                                tracing::info!("app connected: app_id={app_id}, path={requested_path}, peer={peer_addr}");
+                                app_bound = false;
+                                update_snapshot(&snapshot, |state| {
+                                    state.app_connected = true;
+                                    state.app_bound = false;
+                                    state.app_id = Some(app_id.clone());
+                                    state.last_server_info = Some(format!("app connected: {peer_addr}"));
+                                });
+                            }
+                            Some(DglabWsServerEvent::Bound { app_id }) => {
+                                tracing::info!("app bound success: app_id={app_id}");
+                                app_bound = true;
+                                update_snapshot(&snapshot, |state| {
+                                    state.app_connected = true;
+                                    state.app_bound = true;
+                                    state.app_id = Some(app_id.clone());
+                                    state.last_server_info = Some("app bound (200)".to_owned());
+                                });
+                            }
+                            Some(DglabWsServerEvent::AppMessage { app_id, message }) => {
+                                tracing::debug!("app -> program ({app_id}): {message}");
+                                update_snapshot(&snapshot, |state| {
+                                    state.last_app_message = Some(message.clone());
+                                    if let Some(report) = parse_strength_report(&message) {
+                                        latest_soft_limits = [report.a_soft_limit, report.b_soft_limit];
+                                        state.latest_strength = Some(report);
+                                        state.last_server_info = Some(format!(
+                                            "strength sync A:{} B:{} softA:{} softB:{}",
+                                            report.a_strength,
+                                            report.b_strength,
+                                            report.a_soft_limit,
+                                            report.b_soft_limit
+                                        ));
+                                    } else if message.trim().to_ascii_lowercase().starts_with("strength-") {
+                                        state.last_server_info = Some(format!(
+                                            "received non-standard strength report: {}",
+                                            message.trim()
+                                        ));
+                                    }
+                                });
+                            }
+                            Some(DglabWsServerEvent::Disconnected { app_id }) => {
+                                tracing::info!("app disconnected: app_id={app_id}");
+                                app_bound = false;
+                                channel_active = [false; 2];
+                                last_strength = [0; 2];
+                                update_snapshot(&snapshot, |state| {
+                                    state.app_connected = false;
+                                    state.app_bound = false;
+                                    state.app_id = None;
+                                    state.last_server_info = Some("app disconnected".to_owned());
+                                });
+                            }
+                            None => {
+                                tracing::warn!("server event channel closed");
+                                break;
+                            }
                         }
-                        DglabWsServerEvent::AppMessage { app_id, message } => {
-                            tracing::debug!("app -> program ({app_id}): {message}");
-                            update_snapshot(&snapshot_for_events, |state| {
-                                state.last_app_message = Some(message.clone());
-                                if let Some(report) = parse_strength_report(&message) {
-                                    state.latest_strength = Some(report);
-                                    state.last_server_info = Some(format!(
-                                        "strength sync A:{} B:{} softA:{} softB:{}",
-                                        report.a_strength,
-                                        report.b_strength,
-                                        report.a_soft_limit,
-                                        report.b_soft_limit
-                                    ));
-                                }
+                    }
+                    maybe_bands = band_rx.recv() => {
+                        if let Some(bands) = maybe_bands {
+                            latest_bands = bands;
+                            update_snapshot(&snapshot, |state| {
+                                state.latest_band_values = bands;
                             });
-                        }
-                        DglabWsServerEvent::Disconnected { app_id } => {
-                            tracing::info!("app disconnected: app_id={app_id}");
-                            update_snapshot(&snapshot_for_events, |state| {
-                                state.app_connected = false;
-                                state.app_bound = false;
-                                state.app_id = None;
-                                state.last_server_info = Some("app disconnected".to_owned());
+                        } else {
+                            tracing::warn!("audio band channel closed");
+                            update_snapshot(&snapshot, |state| {
+                                state.audio_capture_running = false;
+                                state.last_server_info = Some("audio band stream closed".to_owned());
                             });
                         }
                     }
-                }
-            });
+                    _ = ticker.tick() => {
+                        let local_settings = settings.lock().map(|s| s.clone()).unwrap_or_default();
 
-            if let Err(err) = server.run().await {
-                tracing::error!("dglab ws server stopped with error: {err:?}");
-                update_snapshot(&snapshot, |state| {
-                    state.last_server_info = Some(format!("ws server error: {err}"));
-                });
+                        if local_settings.preferred_output_device_name != active_output_preference {
+                            let requested_output = local_settings.preferred_output_device_name.clone();
+                            let _ = capture.stop();
+                            capture = LoopbackCapture::new(LoopbackCaptureConfig {
+                                preferred_output_device_name: requested_output.clone(),
+                                ..LoopbackCaptureConfig::default()
+                            });
+                            if let Err(err) = capture.start(band_tx.clone()) {
+                                tracing::warn!("audio capture switch failed: {err}");
+                                update_snapshot(&snapshot, |state| {
+                                    state.audio_capture_running = false;
+                                    state.audio_input_device = None;
+                                    state.last_server_info = Some(format!("audio capture switch failed: {err}"));
+                                });
+                            } else {
+                                let device_name = capture.selected_device_name().map(str::to_owned);
+                                latest_bands = [0.0; BAND_COUNT];
+                                update_snapshot(&snapshot, |state| {
+                                    state.audio_capture_running = true;
+                                    state.audio_input_device = device_name.clone();
+                                    state.latest_band_values = [0.0; BAND_COUNT];
+                                    state.last_server_info = Some(format!(
+                                        "audio capture switched to {} (speaker: {})",
+                                        device_name.as_deref().unwrap_or("<unknown>"),
+                                        requested_output.as_deref().unwrap_or("default")
+                                    ));
+                                });
+                            }
+                            active_output_preference = requested_output;
+                        }
+
+                        if !app_bound {
+                            continue;
+                        }
+
+                        let outputs = compute_band_outputs(
+                            latest_bands,
+                            local_settings.band_routing,
+                            local_settings.strength_range,
+                        );
+                        let mut channel_strengths = aggregate_channel_strengths(outputs);
+                        if local_settings.respect_app_soft_limit {
+                            channel_strengths[0] = channel_strengths[0].min(latest_soft_limits[0]);
+                            channel_strengths[1] = channel_strengths[1].min(latest_soft_limits[1]);
+                        }
+
+                        for (idx, channel) in [DglabChannel::A, DglabChannel::B].into_iter().enumerate() {
+                            let strength = channel_strengths[idx];
+                            if strength > 0 {
+                                if strength != last_strength[idx] {
+                                    let msg = build_strength_message(channel, StrengthControlMode::SetValue, strength);
+                                    if let Err(err) = control_for_worker.send_app_message(msg) {
+                                        tracing::warn!("auto strength send failed: {err}");
+                                        update_snapshot(&snapshot, |state| {
+                                            state.last_server_info = Some(format!("auto strength send failed: {err}"));
+                                        });
+                                    } else {
+                                        last_strength[idx] = strength;
+                                    }
+                                }
+
+                                let pulse_items = build_pulse_items_for_strength(
+                                    strength,
+                                    local_settings.pulse_items_per_message.max(1).min(8),
+                                );
+                                match build_pulse_message_from_items(channel, &pulse_items) {
+                                    Ok(pulse_msg) => {
+                                        if let Err(err) = control_for_worker.send_app_message(pulse_msg) {
+                                            tracing::warn!("auto pulse send failed: {err}");
+                                            update_snapshot(&snapshot, |state| {
+                                                state.last_server_info = Some(format!("auto pulse send failed: {err}"));
+                                            });
+                                        } else {
+                                            channel_active[idx] = true;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!("auto pulse build failed: {err}");
+                                        update_snapshot(&snapshot, |state| {
+                                            state.last_server_info = Some(format!("auto pulse build failed: {err}"));
+                                        });
+                                    }
+                                }
+                            } else if channel_active[idx] {
+                                let clear = build_clear_message(channel);
+                                let zero = build_strength_message(channel, StrengthControlMode::SetValue, 0);
+                                if let Err(err) = control_for_worker.send_app_message(clear) {
+                                    tracing::warn!("auto clear send failed: {err}");
+                                }
+                                if let Err(err) = control_for_worker.send_app_message(zero) {
+                                    tracing::warn!("auto strength zero send failed: {err}");
+                                }
+                                channel_active[idx] = false;
+                                last_strength[idx] = 0;
+                            }
+                        }
+                    }
+                }
             }
-            event_task.abort();
-            tracing::info!("dglab ws server worker stop");
+
+            server_task.abort();
+            let _ = capture.stop();
             update_snapshot(&snapshot, |state| {
                 state.app_connected = false;
                 state.app_bound = false;
                 state.app_id = None;
-                state.last_server_info = Some("ws server stopped".to_owned());
+                state.audio_capture_running = false;
+                state.audio_input_device = None;
+                state.last_server_info = Some("pipeline worker stopped".to_owned());
             });
+            tracing::info!("pipeline worker stop");
         }));
 
         Ok(())
@@ -213,6 +461,8 @@ impl PipelineEngine {
             snapshot.app_connected = false;
             snapshot.app_bound = false;
             snapshot.app_id = None;
+            snapshot.audio_capture_running = false;
+            snapshot.audio_input_device = None;
             snapshot.last_server_info = Some("ws server stopped".to_owned());
         });
     }
@@ -243,5 +493,30 @@ fn update_snapshot(
 ) {
     if let Ok(mut state) = snapshot.lock() {
         updater(&mut state);
+    }
+}
+
+fn build_pulse_items_for_strength(strength: u16, count: usize) -> Vec<String> {
+    let _ = strength;
+    let item = "0A0A0A0A0A0A0A0A".to_owned();
+    vec![item; count.max(1)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_pulse_items_for_strength;
+
+    #[test]
+    fn uses_stable_sample_pulse_item() {
+        let items = build_pulse_items_for_strength(123, 4);
+        assert_eq!(
+            items,
+            vec![
+                "0A0A0A0A0A0A0A0A".to_owned(),
+                "0A0A0A0A0A0A0A0A".to_owned(),
+                "0A0A0A0A0A0A0A0A".to_owned(),
+                "0A0A0A0A0A0A0A0A".to_owned(),
+            ]
+        );
     }
 }

@@ -6,6 +6,7 @@ use tokio::runtime::Runtime;
 
 use crate::{
     app::state::AppState,
+    audio::capture::{default_output_device_name, list_output_device_names},
     dglab::{
         pairing,
         protocol::{
@@ -16,7 +17,7 @@ use crate::{
         BAND_COUNT,
         types::{BandRouting, DglabChannel},
     },
-    pipeline::engine::PipelineEngine,
+    pipeline::engine::{PipelineEngine, PipelineSettings},
 };
 
 pub struct DgLinkGuiApp {
@@ -36,6 +37,7 @@ impl DgLinkGuiApp {
             qr_error: None,
             last_qr_payload: String::new(),
         };
+        app.refresh_output_device_list();
         app.start_engine();
         app
     }
@@ -90,51 +92,61 @@ impl DgLinkGuiApp {
 
     fn draw_pairing_panel(&mut self, ui: &mut egui::Ui) {
         let qr_payload = pairing::build_qr_payload(&self.state.websocket_url);
-        ui.group(|ui| {
-            ui.label("DGLab 3.0 Pairing QR");
-            ui.label("Scan this QR code in the mobile app to connect.");
-            ui.code(qr_payload.as_str());
+        ui.label("Scan this QR code in the mobile app to connect.");
+        ui.code(qr_payload.as_str());
 
-            if let Some(texture) = &self.qr_texture {
-                ui.image((texture.id(), texture.size_vec2()));
-            }
+        if let Some(texture) = &self.qr_texture {
+            ui.image((texture.id(), texture.size_vec2()));
+        }
 
-            if let Some(err) = &self.qr_error {
-                ui.colored_label(egui::Color32::from_rgb(200, 40, 40), err);
-            }
+        if let Some(err) = &self.qr_error {
+            ui.colored_label(egui::Color32::from_rgb(200, 40, 40), err);
+        }
 
-            if pairing::ws_url_uses_loopback(&self.state.websocket_url) {
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 40, 40),
-                    "Current host is loopback. Use 'Use Local LAN IP' before scanning.",
-                );
-            } else {
-                ui.small("WS URL should be a LAN IP reachable from your phone.");
-            }
+        if pairing::ws_url_uses_loopback(&self.state.websocket_url) {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 40, 40),
+                "Current host is loopback. Use 'Use Local LAN IP' before scanning.",
+            );
+        } else {
+            ui.small("WS URL should be a LAN IP reachable from your phone.");
+        }
 
-            let server_text = if self.engine.is_running() {
-                "WS server status: running"
-            } else {
-                "WS server status: stopped"
-            };
-            ui.small(server_text);
+        let server_text = if self.engine.is_running() {
+            "WS server status: running"
+        } else {
+            "WS server status: stopped"
+        };
+        ui.small(server_text);
 
-            let app_status = if self.state.app_bound {
-                format!(
-                    "App status: bound (app_id={})",
-                    self.state.app_id.as_deref().unwrap_or("?")
-                )
-            } else if self.state.app_connected {
-                "App status: connected, waiting bind".to_owned()
-            } else {
-                "App status: not connected".to_owned()
-            };
-            ui.small(app_status);
+        let app_status = if self.state.app_bound {
+            format!(
+                "App status: bound (app_id={})",
+                self.state.app_id.as_deref().unwrap_or("?")
+            )
+        } else if self.state.app_connected {
+            "App status: connected, waiting bind".to_owned()
+        } else {
+            "App status: not connected".to_owned()
+        };
+        ui.small(app_status);
 
-            if let Some(info) = &self.state.last_server_info {
-                ui.small(format!("Server info: {info}"));
-            }
-        });
+        if let Some(info) = &self.state.last_server_info {
+            ui.small(format!("Server info: {info}"));
+        }
+
+        let audio_status = if self.state.audio_capture_running {
+            format!(
+                "Audio capture: running ({})",
+                self.state
+                    .audio_input_device
+                    .as_deref()
+                    .unwrap_or("<unknown input device>")
+            )
+        } else {
+            "Audio capture: stopped/unavailable".to_owned()
+        };
+        ui.small(audio_status);
     }
 
     fn draw_strength_range(&mut self, ui: &mut egui::Ui) {
@@ -178,15 +190,86 @@ impl DgLinkGuiApp {
         });
     }
 
+    fn draw_speaker_source_panel(&mut self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label("Audio Source (Speaker Loopback)");
+            ui.small("Capture source is speaker playback loopback, not microphone.");
+
+            ui.horizontal(|ui| {
+                if ui.button("Refresh Speakers").clicked() {
+                    self.refresh_output_device_list();
+                }
+
+                let active = self
+                    .state
+                    .selected_output_device
+                    .as_deref()
+                    .unwrap_or("Auto (Default Speaker)");
+                ui.small(format!("Selected: {active}"));
+            });
+
+            let auto_key = "__AUTO__".to_owned();
+            let mut selected_key = self
+                .state
+                .selected_output_device
+                .clone()
+                .unwrap_or_else(|| auto_key.clone());
+            let selected_label = if selected_key == auto_key {
+                "Auto (Default Speaker)".to_owned()
+            } else {
+                selected_key.clone()
+            };
+
+            egui::ComboBox::from_id_salt("speaker_output_selector")
+                .selected_text(selected_label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut selected_key,
+                        auto_key.clone(),
+                        "Auto (Default Speaker)",
+                    );
+                    for name in &self.state.available_output_devices {
+                        ui.selectable_value(&mut selected_key, name.clone(), name);
+                    }
+                });
+
+            let next_selection = if selected_key == auto_key {
+                None
+            } else {
+                Some(selected_key)
+            };
+            if next_selection != self.state.selected_output_device {
+                let selected_text = next_selection
+                    .as_deref()
+                    .unwrap_or("default")
+                    .to_owned();
+                self.state.selected_output_device = next_selection;
+                self.state
+                    .set_protocol_action(format!("speaker source switched to {selected_text}"));
+            }
+
+            if self.state.available_output_devices.is_empty() {
+                ui.small("No output speaker device found.");
+            } else {
+                ui.small(format!(
+                    "Detected output speakers: {}",
+                    self.state.available_output_devices.len()
+                ));
+            }
+
+            if let Some(default_name) = default_output_device_name() {
+                ui.small(format!("System default speaker: {default_name}"));
+            }
+        });
+    }
+
     fn draw_protocol_debug_panel(&mut self, ui: &mut egui::Ui) {
         let debug_strength_max = self
             .state
             .effective_debug_strength_slider_max(self.state.debug_strength_channel);
         self.state.debug_strength_value = self.state.debug_strength_value.min(debug_strength_max);
 
-        ui.group(|ui| {
-            ui.label("Protocol Debug (Manual)");
-            ui.small("Send raw control messages to App after bind. Fails will be shown explicitly.");
+        ui.small("Send raw control messages to App after bind. Fails will be shown explicitly.");
 
             ui.horizontal(|ui| {
                 ui.label("Strength");
@@ -286,7 +369,19 @@ impl DgLinkGuiApp {
                         self.state.debug_pulse_channel,
                         &self.state.debug_pulse_values,
                     ) {
-                        Ok(message) => self.send_manual_protocol_message(message, None),
+                        Ok(message) => {
+                            let note = self
+                                .state
+                                .app_current_strength_for_channel(self.state.debug_pulse_channel)
+                                .and_then(|current| {
+                                    if current == 0 {
+                                        Some("channel strength is currently 0; pulse can be queued but output may be silent".to_owned())
+                                    } else {
+                                        None
+                                    }
+                                });
+                            self.send_manual_protocol_message(message, note);
+                        }
                         Err(err) => self.state.set_error(err),
                     }
                 }
@@ -305,7 +400,6 @@ impl DgLinkGuiApp {
             if let Some(last_app) = &self.state.last_app_message {
                 ui.small(format!("Last app msg: {last_app}"));
             }
-        });
     }
 
     fn draw_band_editor(&mut self, ui: &mut egui::Ui) {
@@ -371,6 +465,42 @@ impl DgLinkGuiApp {
         }
 
         self.last_qr_payload = payload;
+    }
+
+    fn refresh_output_device_list(&mut self) {
+        match list_output_device_names() {
+            Ok(devices) => {
+                self.state.available_output_devices = devices;
+                if let Some(selected) = self.state.selected_output_device.as_ref() {
+                    if !self
+                        .state
+                        .available_output_devices
+                        .iter()
+                        .any(|name| name == selected)
+                    {
+                        self.state.selected_output_device = None;
+                    }
+                }
+                if self.state.selected_output_device.is_none() {
+                    if let Some(default_name) = default_output_device_name() {
+                        if self
+                            .state
+                            .available_output_devices
+                            .iter()
+                            .any(|name| name == &default_name)
+                        {
+                            self.state.selected_output_device = Some(default_name);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                self.state.available_output_devices.clear();
+                self.state.selected_output_device = None;
+                self.state
+                    .set_error(format!("failed to enumerate speakers: {err}"));
+            }
+        }
     }
 
     fn start_engine(&mut self) {
@@ -490,8 +620,11 @@ impl DgLinkGuiApp {
         self.state.app_connected = snapshot.app_connected;
         self.state.app_bound = snapshot.app_bound;
         self.state.app_id = snapshot.app_id;
+        self.state.band_values = snapshot.latest_band_values;
         self.state.last_app_message = snapshot.last_app_message;
         self.state.last_server_info = snapshot.last_server_info;
+        self.state.audio_capture_running = snapshot.audio_capture_running;
+        self.state.audio_input_device = snapshot.audio_input_device;
 
         if let Some(report) = snapshot.latest_strength {
             self.state.app_strength_report = Some(report);
@@ -510,11 +643,22 @@ impl DgLinkGuiApp {
             }
         }
     }
+
+    fn sync_engine_settings(&self) {
+        self.engine.update_settings(PipelineSettings {
+            band_routing: self.state.band_routing,
+            strength_range: self.state.strength_range,
+            pulse_items_per_message: 3,
+            respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,
+            preferred_output_device_name: self.state.selected_output_device.clone(),
+        });
+    }
 }
 
 impl eframe::App for DgLinkGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_engine_snapshot();
+        self.sync_engine_settings();
         self.refresh_qr_texture_if_needed(ctx);
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -525,11 +669,22 @@ impl eframe::App for DgLinkGuiApp {
             ui.heading("DG-Lab Audio Link");
             ui.label("Windows speaker output -> 4-band analysis -> DGLab A/B waveform output");
             ui.separator();
-            self.draw_pairing_panel(ui);
+            egui::CollapsingHeader::new("DGLab 3.0 Pairing QR")
+                .default_open(true)
+                .show(ui, |ui| {
+                    self.draw_pairing_panel(ui);
+                });
             ui.separator();
-            self.draw_protocol_debug_panel(ui);
+            egui::CollapsingHeader::new("Protocol Debug (Manual)")
+                .default_open(false)
+                .show(ui, |ui| {
+                    self.draw_protocol_debug_panel(ui);
+                });
             ui.separator();
-            self.draw_strength_range(ui);
+            ui.columns(2, |columns| {
+                self.draw_strength_range(&mut columns[0]);
+                self.draw_speaker_source_panel(&mut columns[1]);
+            });
             ui.separator();
             self.draw_band_editor(ui);
         });

@@ -36,9 +36,26 @@ pub fn compute_band_outputs(
     outputs
 }
 
+pub fn aggregate_channel_strengths(
+    outputs: [Option<(DglabChannel, u16)>; BAND_COUNT],
+) -> [u16; 2] {
+    let mut result = [0_u16; 2];
+    for output in outputs.into_iter().flatten() {
+        match output.0 {
+            DglabChannel::A => {
+                result[0] = result[0].max(output.1);
+            }
+            DglabChannel::B => {
+                result[1] = result[1].max(output.1);
+            }
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{compute_band_outputs, map_band_to_strength};
+    use super::{aggregate_channel_strengths, compute_band_outputs, map_band_to_strength};
     use crate::domain::types::{BandRouting, DglabChannel, StrengthRange};
 
     #[test]
@@ -72,5 +89,16 @@ mod tests {
         assert!(outputs[1].is_none());
         assert!(outputs[2].is_none());
         assert!(outputs[3].is_some());
+    }
+
+    #[test]
+    fn aggregates_by_channel_with_max_strength() {
+        let aggregated = aggregate_channel_strengths([
+            Some((DglabChannel::A, 10)),
+            Some((DglabChannel::A, 40)),
+            Some((DglabChannel::B, 12)),
+            Some((DglabChannel::B, 8)),
+        ]);
+        assert_eq!(aggregated, [40, 12]);
     }
 }
