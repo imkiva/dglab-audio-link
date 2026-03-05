@@ -11,7 +11,7 @@ use crate::{
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const SETTINGS_SCHEMA_VERSION: u8 = 3;
+const SETTINGS_SCHEMA_VERSION: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -22,6 +22,7 @@ pub struct PersistedSettings {
     pub strength_range_a: StrengthRange,
     pub strength_range_b: StrengthRange,
     pub auto_pulse_mode: AutoPulseMode,
+    pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
     pub selected_output_device: Option<String>,
@@ -41,6 +42,7 @@ impl Default for PersistedSettings {
             strength_range_a: StrengthRange::new(10, 160),
             strength_range_b: StrengthRange::new(10, 160),
             auto_pulse_mode: AutoPulseMode::ByStrength,
+            waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
             selected_output_device: None,
@@ -57,6 +59,7 @@ impl PersistedSettings {
             strength_range_a: state.strength_range_a,
             strength_range_b: state.strength_range_b,
             auto_pulse_mode: state.auto_pulse_mode,
+            waveform_contrast: state.waveform_contrast,
             smooth_strength_enabled: state.smooth_strength_enabled,
             smooth_strength_factor: state.smooth_strength_factor,
             selected_output_device: state.selected_output_device.clone(),
@@ -71,6 +74,7 @@ impl PersistedSettings {
         state.strength_range_a = normalized.strength_range_a;
         state.strength_range_b = normalized.strength_range_b;
         state.auto_pulse_mode = normalized.auto_pulse_mode;
+        state.waveform_contrast = normalized.waveform_contrast;
         state.smooth_strength_enabled = normalized.smooth_strength_enabled;
         state.smooth_strength_factor = normalized.smooth_strength_factor;
         state.selected_output_device = normalized.selected_output_device;
@@ -84,10 +88,14 @@ impl PersistedSettings {
         if self.version < 3 {
             self.auto_pulse_mode = AutoPulseMode::ByStrength;
         }
+        if self.version < 4 {
+            self.waveform_contrast = 1.8;
+        }
         self.version = SETTINGS_SCHEMA_VERSION;
 
         self.strength_range_a = self.strength_range_a.normalized();
         self.strength_range_b = self.strength_range_b.normalized();
+        self.waveform_contrast = self.waveform_contrast.clamp(1.0, 4.0);
         self.smooth_strength_factor = self.smooth_strength_factor.clamp(0.0, 1.0);
 
         for route in &mut self.band_routing {

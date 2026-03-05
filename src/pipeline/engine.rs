@@ -35,6 +35,7 @@ pub struct PipelineSettings {
     pub strength_ranges: [StrengthRange; 2],
     pub pulse_items_per_message: usize,
     pub auto_pulse_mode: AutoPulseMode,
+    pub waveform_contrast: f32,
     pub respect_app_soft_limit: bool,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
@@ -48,6 +49,7 @@ impl Default for PipelineSettings {
             strength_ranges: [StrengthRange::new(10, 160), StrengthRange::new(10, 160)],
             pulse_items_per_message: 3,
             auto_pulse_mode: AutoPulseMode::ByStrength,
+            waveform_contrast: 1.8,
             respect_app_soft_limit: true,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
@@ -384,10 +386,18 @@ impl PipelineEngine {
                                     }
                                 }
 
+                                let configured_max = local_settings.strength_ranges[idx].normalized().max;
+                                let mapping_max = if local_settings.respect_app_soft_limit {
+                                    configured_max.min(latest_soft_limits[idx])
+                                } else {
+                                    configured_max
+                                };
                                 let pulse_items = build_pulse_items_for_strength(
                                     strength,
+                                    mapping_max,
                                     local_settings.pulse_items_per_message.max(1).min(8),
                                     local_settings.auto_pulse_mode,
+                                    local_settings.waveform_contrast,
                                 );
                                 match build_pulse_message_from_items(channel, &pulse_items) {
                                     Ok(pulse_msg) => {
@@ -535,7 +545,13 @@ fn update_snapshot(
     }
 }
 
-fn build_pulse_items_for_strength(strength: u16, count: usize, mode: AutoPulseMode) -> Vec<String> {
+fn build_pulse_items_for_strength(
+    strength: u16,
+    mapping_max_strength: u16,
+    count: usize,
+    mode: AutoPulseMode,
+    waveform_contrast: f32,
+) -> Vec<String> {
     const CONTINUOUS_FREQ_HEX: &str = "0A0A0A0A";
     const MAX_WAVE_STRENGTH: u8 = 100;
 
@@ -543,11 +559,16 @@ fn build_pulse_items_for_strength(strength: u16, count: usize, mode: AutoPulseMo
 
     let item = match mode {
         AutoPulseMode::ByStrength => {
-            let normalized = (strength.min(200) as f32 / 200.0).clamp(0.0, 1.0);
+            let mapping_max_strength = mapping_max_strength.clamp(1, 200);
+            let contrast = waveform_contrast.clamp(1.0, 4.0);
+            let normalized =
+                (strength.min(mapping_max_strength) as f32 / mapping_max_strength as f32)
+                    .clamp(0.0, 1.0);
+            let boosted = ((normalized - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
             let wave_strength = if strength == 0 {
                 0
             } else {
-                ((normalized * MAX_WAVE_STRENGTH as f32).round() as u8).clamp(1, MAX_WAVE_STRENGTH)
+                ((boosted * MAX_WAVE_STRENGTH as f32).round() as u8).clamp(1, MAX_WAVE_STRENGTH)
             };
             format!("{CONTINUOUS_FREQ_HEX}{}", wave_strength_hex(wave_strength))
         }
@@ -584,7 +605,7 @@ mod tests {
 
     #[test]
     fn builds_strength_based_pulse_items() {
-        let items = build_pulse_items_for_strength(100, 4, AutoPulseMode::ByStrength);
+        let items = build_pulse_items_for_strength(100, 200, 4, AutoPulseMode::ByStrength, 1.0);
         assert_eq!(
             items,
             vec![
@@ -598,7 +619,7 @@ mod tests {
 
     #[test]
     fn builds_always_max_pulse_items() {
-        let items = build_pulse_items_for_strength(1, 3, AutoPulseMode::AlwaysMax);
+        let items = build_pulse_items_for_strength(1, 200, 3, AutoPulseMode::AlwaysMax, 1.0);
         assert_eq!(
             items,
             vec![
@@ -611,16 +632,36 @@ mod tests {
 
     #[test]
     fn strength_based_pulse_never_contains_gap_pattern_when_strength_is_positive() {
-        let items = build_pulse_items_for_strength(1, 1, AutoPulseMode::ByStrength);
+        let items = build_pulse_items_for_strength(1, 200, 1, AutoPulseMode::ByStrength, 1.0);
         assert_eq!(items[0], "0A0A0A0A01010101");
     }
 
     #[test]
     fn strength_based_pulse_uses_valid_v3_ranges() {
-        let zero = build_pulse_items_for_strength(0, 1, AutoPulseMode::ByStrength);
-        let max = build_pulse_items_for_strength(200, 1, AutoPulseMode::ByStrength);
+        let zero = build_pulse_items_for_strength(0, 200, 1, AutoPulseMode::ByStrength, 1.0);
+        let max = build_pulse_items_for_strength(200, 200, 1, AutoPulseMode::ByStrength, 1.0);
         assert_eq!(zero[0], "0A0A0A0A00000000");
         assert_eq!(max[0], "0A0A0A0A64646464");
+    }
+
+    #[test]
+    fn strength_based_pulse_reaches_max_at_mapping_cap() {
+        let items = build_pulse_items_for_strength(80, 80, 1, AutoPulseMode::ByStrength, 1.0);
+        assert_eq!(items[0], "0A0A0A0A64646464");
+    }
+
+    #[test]
+    fn strength_based_pulse_clamps_to_mapping_cap() {
+        let items = build_pulse_items_for_strength(160, 80, 1, AutoPulseMode::ByStrength, 1.0);
+        assert_eq!(items[0], "0A0A0A0A64646464");
+    }
+
+    #[test]
+    fn waveform_contrast_boosts_dynamic_range() {
+        let linear = build_pulse_items_for_strength(120, 200, 1, AutoPulseMode::ByStrength, 1.0);
+        let boosted = build_pulse_items_for_strength(120, 200, 1, AutoPulseMode::ByStrength, 1.8);
+        assert_eq!(linear[0], "0A0A0A0A3C3C3C3C");
+        assert_eq!(boosted[0], "0A0A0A0A44444444");
     }
 
     #[test]

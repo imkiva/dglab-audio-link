@@ -28,6 +28,7 @@ pub struct AppState {
     pub output_strengths: [u16; 2],
     pub auto_limit_with_app_soft_limit: bool,
     pub auto_pulse_mode: AutoPulseMode,
+    pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
     pub last_app_message: Option<String>,
@@ -69,6 +70,7 @@ impl Default for AppState {
             output_strengths: [0; 2],
             auto_limit_with_app_soft_limit: true,
             auto_pulse_mode: AutoPulseMode::ByStrength,
+            waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
             last_app_message: None,
@@ -128,6 +130,10 @@ impl AppState {
 
     pub fn normalized_smooth_strength_factor(&self) -> f32 {
         self.smooth_strength_factor.clamp(0.0, 1.0)
+    }
+
+    pub fn normalized_waveform_contrast(&self) -> f32 {
+        self.waveform_contrast.clamp(1.0, 4.0)
     }
 
     pub fn rotate_session_id(&mut self) {

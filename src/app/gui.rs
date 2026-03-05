@@ -395,6 +395,11 @@ impl DgLinkGuiApp {
         let pulse_mode_label = self.tr("Auto pulse mode", "自动波形模式");
         let pulse_mode_by_strength = self.tr("By strength", "按强度映射");
         let pulse_mode_always_max = self.tr("Always max waveform", "波形始终最高");
+        let contrast_label = self.tr("Waveform contrast", "波形对比度");
+        let contrast_hint = self.tr(
+            "1.0 = linear mapping, higher value = larger amplitude changes",
+            "1.0 = 线性映射，值越大振幅变化越明显",
+        );
         let waveform_scope_note = self.tr(
             "This mode controls waveform shape only, not channel strength.",
             "该模式只控制波形形状，不会改变通道强度。",
@@ -439,6 +444,17 @@ impl DgLinkGuiApp {
                     AutoPulseMode::AlwaysMax => pulse_mode_always_max,
                 }
             ));
+            if self.state.auto_pulse_mode == AutoPulseMode::ByStrength {
+                ui.add(
+                    egui::Slider::new(&mut self.state.waveform_contrast, 1.0..=4.0)
+                        .text(contrast_label),
+                );
+                self.state.waveform_contrast = self.state.normalized_waveform_contrast();
+                ui.small(format!(
+                    "{contrast_hint}: {:.2}",
+                    self.state.waveform_contrast
+                ));
+            }
             ui.small(waveform_scope_note);
             ui.small(match self.state.auto_pulse_mode {
                 AutoPulseMode::ByStrength => by_strength_note,
@@ -1156,6 +1172,7 @@ impl DgLinkGuiApp {
             strength_ranges: [self.state.strength_range_a, self.state.strength_range_b],
             pulse_items_per_message: 3,
             auto_pulse_mode: self.state.auto_pulse_mode,
+            waveform_contrast: self.state.normalized_waveform_contrast(),
             respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,
             smooth_strength_enabled: self.state.smooth_strength_enabled,
             smooth_strength_factor: self.state.normalized_smooth_strength_factor(),
