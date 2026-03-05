@@ -29,7 +29,10 @@ fn main() -> Result<()> {
     eframe::run_native(
         "DG-Lab Audio Link",
         native_options,
-        Box::new(move |_cc| Ok(Box::new(app::gui::DgLinkGuiApp::new(runtime.clone())))),
+        Box::new(move |cc| {
+            app::gui::install_cjk_font(&cc.egui_ctx);
+            Ok(Box::new(app::gui::DgLinkGuiApp::new(runtime.clone())))
+        }),
     )
     .map_err(|err| anyhow!(err.to_string()))?;
 

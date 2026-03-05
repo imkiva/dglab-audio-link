@@ -28,6 +28,49 @@ pub struct DgLinkGuiApp {
     last_qr_payload: String,
 }
 
+pub fn install_cjk_font(ctx: &egui::Context) {
+    #[cfg(target_os = "windows")]
+    {
+        const CANDIDATE_FONT_PATHS: [&str; 7] = [
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\msyhl.ttc",
+            r"C:\Windows\Fonts\msyhbd.ttc",
+            r"C:\Windows\Fonts\simhei.ttf",
+            r"C:\Windows\Fonts\Deng.ttf",
+            r"C:\Windows\Fonts\Dengl.ttf",
+            r"C:\Windows\Fonts\simsunb.ttf",
+        ];
+
+        for path in CANDIDATE_FONT_PATHS {
+            let bytes = match std::fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+
+            let mut fonts = egui::FontDefinitions::default();
+            let cjk_font_name = "system_cjk".to_owned();
+            fonts.font_data.insert(
+                cjk_font_name.clone(),
+                egui::FontData::from_owned(bytes).into(),
+            );
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                family.insert(0, cjk_font_name.clone());
+            }
+            if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+                family.push(cjk_font_name.clone());
+            }
+            ctx.set_fonts(fonts);
+            tracing::info!("loaded CJK font for GUI: {path}");
+            return;
+        }
+
+        tracing::warn!("no Windows CJK font file found, Chinese glyphs may not render correctly");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    let _ = ctx;
+}
+
 impl DgLinkGuiApp {
     pub fn new(runtime: Arc<Runtime>) -> Self {
         let mut app = Self {
@@ -150,28 +193,56 @@ impl DgLinkGuiApp {
     }
 
     fn draw_strength_range(&mut self, ui: &mut egui::Ui) {
-        let slider_max = self.state.effective_global_strength_slider_max();
-        self.state.strength_range.max = self.state.strength_range.max.min(slider_max);
-        self.state.strength_range.min = self
+        let slider_max_a = self
             .state
-            .strength_range
+            .effective_strength_slider_max_for_channel(DglabChannel::A);
+        let slider_max_b = self
+            .state
+            .effective_strength_slider_max_for_channel(DglabChannel::B);
+
+        self.state.strength_range_a.max = self.state.strength_range_a.max.min(slider_max_a);
+        self.state.strength_range_a.min = self
+            .state
+            .strength_range_a
             .min
-            .min(self.state.strength_range.max);
+            .min(self.state.strength_range_a.max);
+        self.state.strength_range_b.max = self.state.strength_range_b.max.min(slider_max_b);
+        self.state.strength_range_b.min = self
+            .state
+            .strength_range_b
+            .min
+            .min(self.state.strength_range_b.max);
 
         ui.group(|ui| {
-            ui.label("DGLab Strength Range (0-200)");
+            ui.label("DGLab Strength Range (A/B, 0-200)");
             ui.checkbox(
                 &mut self.state.auto_limit_with_app_soft_limit,
                 "Auto-limit sliders by App soft limit",
             );
 
-            ui.add(
-                egui::Slider::new(&mut self.state.strength_range.min, 0..=slider_max).text("Min"),
-            );
-            ui.add(
-                egui::Slider::new(&mut self.state.strength_range.max, 0..=slider_max).text("Max"),
-            );
-            self.state.strength_range = self.state.strength_range.normalized();
+            ui.columns(2, |columns| {
+                columns[0].label("Channel A");
+                columns[0].add(
+                    egui::Slider::new(&mut self.state.strength_range_a.min, 0..=slider_max_a)
+                        .text("Min"),
+                );
+                columns[0].add(
+                    egui::Slider::new(&mut self.state.strength_range_a.max, 0..=slider_max_a)
+                        .text("Max"),
+                );
+                self.state.strength_range_a = self.state.strength_range_a.normalized();
+
+                columns[1].label("Channel B");
+                columns[1].add(
+                    egui::Slider::new(&mut self.state.strength_range_b.min, 0..=slider_max_b)
+                        .text("Min"),
+                );
+                columns[1].add(
+                    egui::Slider::new(&mut self.state.strength_range_b.max, 0..=slider_max_b)
+                        .text("Max"),
+                );
+                self.state.strength_range_b = self.state.strength_range_b.normalized();
+            });
 
             if let Some(report) = self.state.app_strength_report {
                 ui.small(format!(
@@ -182,9 +253,9 @@ impl DgLinkGuiApp {
                 ui.small("No app strength report yet. Send/receive once after bind.");
             }
 
-            if slider_max < 200 {
+            if slider_max_a < 200 || slider_max_b < 200 {
                 ui.small(format!(
-                    "Current global max is limited by App soft limit: {slider_max}"
+                    "Current max limited by App soft limit: A={slider_max_a}, B={slider_max_b}"
                 ));
             }
         });
@@ -629,13 +700,26 @@ impl DgLinkGuiApp {
         if let Some(report) = snapshot.latest_strength {
             self.state.app_strength_report = Some(report);
             if self.state.auto_limit_with_app_soft_limit {
-                let global_max = self.state.effective_global_strength_slider_max();
-                self.state.strength_range.max = self.state.strength_range.max.min(global_max);
-                self.state.strength_range.min = self
+                let max_a = self
                     .state
-                    .strength_range
+                    .effective_strength_slider_max_for_channel(DglabChannel::A);
+                self.state.strength_range_a.max = self.state.strength_range_a.max.min(max_a);
+                self.state.strength_range_a.min = self
+                    .state
+                    .strength_range_a
                     .min
-                    .min(self.state.strength_range.max);
+                    .min(self.state.strength_range_a.max);
+
+                let max_b = self
+                    .state
+                    .effective_strength_slider_max_for_channel(DglabChannel::B);
+                self.state.strength_range_b.max = self.state.strength_range_b.max.min(max_b);
+                self.state.strength_range_b.min = self
+                    .state
+                    .strength_range_b
+                    .min
+                    .min(self.state.strength_range_b.max);
+
                 let debug_max = self
                     .state
                     .effective_debug_strength_slider_max(self.state.debug_strength_channel);
@@ -647,7 +731,7 @@ impl DgLinkGuiApp {
     fn sync_engine_settings(&self) {
         self.engine.update_settings(PipelineSettings {
             band_routing: self.state.band_routing,
-            strength_range: self.state.strength_range,
+            strength_ranges: [self.state.strength_range_a, self.state.strength_range_b],
             pulse_items_per_message: 3,
             respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,
             preferred_output_device_name: self.state.selected_output_device.clone(),

@@ -28,6 +28,13 @@ impl DglabChannel {
             Self::B => 2,
         }
     }
+
+    pub const fn index(self) -> usize {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

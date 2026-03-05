@@ -20,7 +20,7 @@ pub fn map_band_to_strength(value: f32, threshold: f32, range: StrengthRange) ->
 pub fn compute_band_outputs(
     values: [f32; BAND_COUNT],
     routing: [BandRouting; BAND_COUNT],
-    range: StrengthRange,
+    ranges_by_channel: [StrengthRange; 2],
 ) -> [Option<(DglabChannel, u16)>; BAND_COUNT] {
     let mut outputs = [None; BAND_COUNT];
 
@@ -28,7 +28,8 @@ pub fn compute_band_outputs(
         let route = routing[index];
         let value = values[index].clamp(0.0, 1.0);
         if route.enabled && value > route.threshold {
-            let strength = map_band_to_strength(value, route.threshold, range);
+            let channel_range = ranges_by_channel[route.channel.index()];
+            let strength = map_band_to_strength(value, route.threshold, channel_range);
             outputs[index] = Some((route.channel, strength));
         }
     }
@@ -84,11 +85,36 @@ mod tests {
             BandRouting::new(true, 0.6, DglabChannel::B),
         ];
 
-        let outputs = compute_band_outputs(values, routing, StrengthRange::new(10, 50));
+        let outputs = compute_band_outputs(
+            values,
+            routing,
+            [StrengthRange::new(10, 50), StrengthRange::new(10, 50)],
+        );
         assert!(outputs[0].is_some());
         assert!(outputs[1].is_none());
         assert!(outputs[2].is_none());
         assert!(outputs[3].is_some());
+    }
+
+    #[test]
+    fn maps_range_per_channel() {
+        let values = [0.95, 0.0, 0.0, 0.95];
+        let routing = [
+            BandRouting::new(true, 0.1, DglabChannel::A),
+            BandRouting::new(false, 0.1, DglabChannel::A),
+            BandRouting::new(false, 0.1, DglabChannel::B),
+            BandRouting::new(true, 0.1, DglabChannel::B),
+        ];
+
+        let outputs = compute_band_outputs(
+            values,
+            routing,
+            [StrengthRange::new(10, 20), StrengthRange::new(80, 100)],
+        );
+        let a = outputs[0].expect("a output");
+        let b = outputs[3].expect("b output");
+        assert!(a.1 <= 20);
+        assert!(b.1 >= 80);
     }
 
     #[test]

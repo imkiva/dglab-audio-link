@@ -10,7 +10,8 @@ pub struct AppState {
     pub websocket_url: String,
     pub band_routing: [BandRouting; BAND_COUNT],
     pub band_values: [f32; BAND_COUNT],
-    pub strength_range: StrengthRange,
+    pub strength_range_a: StrengthRange,
+    pub strength_range_b: StrengthRange,
     pub debug_strength_channel: DglabChannel,
     pub debug_strength_mode: StrengthControlMode,
     pub debug_strength_value: u16,
@@ -44,7 +45,8 @@ impl Default for AppState {
                 BandRouting::new(true, 0.55, DglabChannel::B),
             ],
             band_values: [0.0; BAND_COUNT],
-            strength_range: StrengthRange::new(10, 160),
+            strength_range_a: StrengthRange::new(10, 160),
+            strength_range_b: StrengthRange::new(10, 160),
             debug_strength_channel: DglabChannel::A,
             debug_strength_mode: StrengthControlMode::SetValue,
             debug_strength_value: 50,
@@ -99,14 +101,11 @@ impl AppState {
         }
     }
 
-    pub fn effective_global_strength_slider_max(&self) -> u16 {
+    pub fn effective_strength_slider_max_for_channel(&self, channel: DglabChannel) -> u16 {
         if !self.auto_limit_with_app_soft_limit {
             return 200;
         }
-
-        self.app_strength_report
-            .map(|report| report.a_soft_limit.min(report.b_soft_limit))
-            .unwrap_or(200)
+        self.app_soft_limit_for_channel(channel).unwrap_or(200)
     }
 
     pub fn effective_debug_strength_slider_max(&self, channel: DglabChannel) -> u16 {

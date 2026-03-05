@@ -23,7 +23,7 @@ const DEFAULT_SEND_INTERVAL_MS: u64 = 300;
 #[derive(Debug, Clone)]
 pub struct PipelineSettings {
     pub band_routing: [BandRouting; BAND_COUNT],
-    pub strength_range: StrengthRange,
+    pub strength_ranges: [StrengthRange; 2],
     pub pulse_items_per_message: usize,
     pub respect_app_soft_limit: bool,
     pub preferred_output_device_name: Option<String>,
@@ -33,7 +33,7 @@ impl Default for PipelineSettings {
     fn default() -> Self {
         Self {
             band_routing: [BandRouting::default(); BAND_COUNT],
-            strength_range: StrengthRange::new(10, 160),
+            strength_ranges: [StrengthRange::new(10, 160), StrengthRange::new(10, 160)],
             pulse_items_per_message: 3,
             respect_app_soft_limit: true,
             preferred_output_device_name: None,
@@ -329,7 +329,7 @@ impl PipelineEngine {
                         let outputs = compute_band_outputs(
                             latest_bands,
                             local_settings.band_routing,
-                            local_settings.strength_range,
+                            local_settings.strength_ranges,
                         );
                         let mut channel_strengths = aggregate_channel_strengths(outputs);
                         if local_settings.respect_app_soft_limit {
