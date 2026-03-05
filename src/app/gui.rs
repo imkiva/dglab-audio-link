@@ -5,8 +5,11 @@ use qrcodegen::{QrCode, QrCodeEcc};
 use tokio::runtime::Runtime;
 
 use crate::{
-    app::i18n::{UiLanguage, tr},
-    app::state::AppState,
+    app::{
+        i18n::{UiLanguage, tr},
+        settings::{self, PersistedSettings},
+        state::AppState,
+    },
     audio::capture::{default_output_device_name, list_output_device_names},
     dglab::{
         pairing,
@@ -28,6 +31,7 @@ pub struct DgLinkGuiApp {
     qr_error: Option<String>,
     last_qr_payload: String,
     prev_app_bound: bool,
+    last_persisted_settings: PersistedSettings,
 }
 
 pub fn install_cjk_font(ctx: &egui::Context) {
@@ -75,16 +79,26 @@ pub fn install_cjk_font(ctx: &egui::Context) {
 
 impl DgLinkGuiApp {
     pub fn new(runtime: Arc<Runtime>, language: UiLanguage) -> Self {
+        let mut state = AppState::default();
+        state.language = language;
+        match settings::load_settings() {
+            Ok(Some(saved)) => saved.apply_to_state(&mut state),
+            Ok(None) => {}
+            Err(err) => tracing::warn!("failed to load persisted GUI settings: {err}"),
+        }
+        let last_persisted_settings = PersistedSettings::from_state(&state);
+
         let mut app = Self {
-            state: AppState::default(),
+            state,
             engine: PipelineEngine::new(runtime),
             qr_texture: None,
             qr_error: None,
             last_qr_payload: String::new(),
             prev_app_bound: false,
+            last_persisted_settings,
         };
-        app.state.language = language;
         app.refresh_output_device_list();
+        app.persist_settings_if_changed();
         app.start_engine();
         app
     }
@@ -673,7 +687,6 @@ impl DgLinkGuiApp {
             }
             Err(err) => {
                 self.state.available_output_devices.clear();
-                self.state.selected_output_device = None;
                 self.state
                     .set_error(format!("{}: {err}", self.tr("failed to enumerate speakers", "枚举扬声器失败")));
             }
@@ -874,10 +887,25 @@ impl DgLinkGuiApp {
             preferred_output_device_name: self.state.selected_output_device.clone(),
         });
     }
+
+    fn persist_settings_if_changed(&mut self) {
+        let current = PersistedSettings::from_state(&self.state);
+        if current == self.last_persisted_settings {
+            return;
+        }
+
+        if let Err(err) = settings::save_settings(&current) {
+            tracing::warn!("failed to persist GUI settings: {err}");
+        }
+        self.last_persisted_settings = current;
+    }
 }
 
 impl eframe::App for DgLinkGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+            self.state.language.app_title().to_owned(),
+        ));
         self.sync_engine_snapshot();
         self.sync_engine_settings();
         self.refresh_qr_texture_if_needed(ctx);
@@ -930,6 +958,7 @@ impl eframe::App for DgLinkGuiApp {
             self.state.running = false;
         }
         self.prev_app_bound = self.state.app_bound;
+        self.persist_settings_if_changed();
 
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }

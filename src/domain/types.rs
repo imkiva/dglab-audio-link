@@ -37,7 +37,7 @@ impl DglabChannel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BandRouting {
     pub enabled: bool,
     pub threshold: f32,
@@ -64,7 +64,7 @@ impl Default for BandRouting {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StrengthRange {
     pub min: u16,
     pub max: u16,
