@@ -19,6 +19,8 @@ pub struct PersistedSettings {
     pub band_routing: [BandRouting; BAND_COUNT],
     pub strength_range_a: StrengthRange,
     pub strength_range_b: StrengthRange,
+    pub smooth_strength_enabled: bool,
+    pub smooth_strength_factor: f32,
     pub selected_output_device: Option<String>,
 }
 
@@ -34,6 +36,8 @@ impl Default for PersistedSettings {
             ],
             strength_range_a: StrengthRange::new(10, 160),
             strength_range_b: StrengthRange::new(10, 160),
+            smooth_strength_enabled: true,
+            smooth_strength_factor: 0.30,
             selected_output_device: None,
         }
     }
@@ -46,6 +50,8 @@ impl PersistedSettings {
             band_routing: state.band_routing,
             strength_range_a: state.strength_range_a,
             strength_range_b: state.strength_range_b,
+            smooth_strength_enabled: state.smooth_strength_enabled,
+            smooth_strength_factor: state.smooth_strength_factor,
             selected_output_device: state.selected_output_device.clone(),
         }
         .sanitized()
@@ -57,12 +63,15 @@ impl PersistedSettings {
         state.band_routing = normalized.band_routing;
         state.strength_range_a = normalized.strength_range_a;
         state.strength_range_b = normalized.strength_range_b;
+        state.smooth_strength_enabled = normalized.smooth_strength_enabled;
+        state.smooth_strength_factor = normalized.smooth_strength_factor;
         state.selected_output_device = normalized.selected_output_device;
     }
 
     fn sanitized(mut self) -> Self {
         self.strength_range_a = self.strength_range_a.normalized();
         self.strength_range_b = self.strength_range_b.normalized();
+        self.smooth_strength_factor = self.smooth_strength_factor.clamp(0.05, 1.0);
 
         for route in &mut self.band_routing {
             route.threshold = route.threshold.clamp(0.0, 1.0);

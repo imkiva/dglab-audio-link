@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc, time::Instant};
 
 use eframe::egui;
+use egui_plot::{Legend, Line, Plot, PlotPoints};
 use qrcodegen::{QrCode, QrCodeEcc};
 use tokio::runtime::Runtime;
 
@@ -32,7 +33,12 @@ pub struct DgLinkGuiApp {
     last_qr_payload: String,
     prev_app_bound: bool,
     last_persisted_settings: PersistedSettings,
+    strength_history_started_at: Instant,
+    strength_history: VecDeque<(f64, u16, u16)>,
 }
+
+const STRENGTH_HISTORY_MAX_POINTS: usize = 600;
+const STRENGTH_HISTORY_WINDOW_SECONDS: f64 = 60.0;
 
 pub fn install_cjk_font(ctx: &egui::Context) {
     #[cfg(target_os = "windows")]
@@ -96,6 +102,8 @@ impl DgLinkGuiApp {
             last_qr_payload: String::new(),
             prev_app_bound: false,
             last_persisted_settings,
+            strength_history_started_at: Instant::now(),
+            strength_history: VecDeque::new(),
         };
         app.refresh_output_device_list();
         app.persist_settings_if_changed();
@@ -259,6 +267,12 @@ impl DgLinkGuiApp {
         let channel_b_label = self.tr("Channel B", "B 通道");
         let min_label = self.tr("Min", "最小");
         let max_label = self.tr("Max", "最大");
+        let smooth_strength_label = self.tr("Smooth strength", "平滑强度");
+        let smooth_factor_label = self.tr("Smoothing factor", "平滑系数");
+        let smooth_factor_hint = self.tr(
+            "Rate-limited step: lower = slower, higher = faster; still reaches target exactly",
+            "变化率限速：越小越慢，越大越快；但仍会精确到达目标值",
+        );
         let app_strength_label = self.tr("App strength", "App 强度");
         let no_report_label = self.tr(
             "No app strength report yet. Send/receive once after bind.",
@@ -295,6 +309,15 @@ impl DgLinkGuiApp {
                 &mut self.state.auto_limit_with_app_soft_limit,
                 auto_limit_label,
             );
+            ui.checkbox(&mut self.state.smooth_strength_enabled, smooth_strength_label);
+            if self.state.smooth_strength_enabled {
+                ui.add(
+                    egui::Slider::new(&mut self.state.smooth_strength_factor, 0.05..=1.0)
+                        .text(smooth_factor_label),
+                );
+                self.state.smooth_strength_factor = self.state.normalized_smooth_strength_factor();
+                ui.small(format!("{smooth_factor_hint}: {:.2}", self.state.smooth_strength_factor));
+            }
 
             ui.columns(2, |columns| {
                 columns[0].label(channel_a_label);
@@ -841,11 +864,13 @@ impl DgLinkGuiApp {
         self.state.app_connected = snapshot.app_connected;
         self.state.app_bound = snapshot.app_bound;
         self.state.app_id = snapshot.app_id;
+        self.state.output_strengths = snapshot.output_strengths;
         self.state.band_values = snapshot.latest_band_values;
         self.state.last_app_message = snapshot.last_app_message;
         self.state.last_server_info = snapshot.last_server_info;
         self.state.audio_capture_running = snapshot.audio_capture_running;
         self.state.audio_input_device = snapshot.audio_input_device;
+        self.push_strength_history(self.state.output_strengths);
 
         if let Some(report) = snapshot.latest_strength {
             self.state.app_strength_report = Some(report);
@@ -878,12 +903,97 @@ impl DgLinkGuiApp {
         }
     }
 
+    fn push_strength_history(&mut self, output_strengths: [u16; 2]) {
+        let now = self.strength_history_started_at.elapsed().as_secs_f64();
+        self.strength_history
+            .push_back((now, output_strengths[0], output_strengths[1]));
+
+        while self.strength_history.len() > STRENGTH_HISTORY_MAX_POINTS {
+            let _ = self.strength_history.pop_front();
+        }
+
+        while let Some((first_time, _, _)) = self.strength_history.front() {
+            if now - *first_time <= STRENGTH_HISTORY_WINDOW_SECONDS {
+                break;
+            }
+            let _ = self.strength_history.pop_front();
+        }
+    }
+
+    fn draw_strength_history_plot(&self, ui: &mut egui::Ui) {
+        ui.group(|ui| {
+            ui.label(self.tr("Output Strength Trend (A/B)", "输出强度曲线（A/B）"));
+
+            if self.strength_history.is_empty() {
+                ui.small(self.tr(
+                    "No strength data yet.",
+                    "暂无强度数据。",
+                ));
+                return;
+            }
+
+            let x_origin = self
+                .strength_history
+                .front()
+                .map(|(t, _, _)| *t)
+                .unwrap_or(0.0);
+            let points_a: Vec<[f64; 2]> = self
+                .strength_history
+                .iter()
+                .map(|(t, a, _)| [*t - x_origin, *a as f64])
+                .collect();
+            let points_b: Vec<[f64; 2]> = self
+                .strength_history
+                .iter()
+                .map(|(t, _, b)| [*t - x_origin, *b as f64])
+                .collect();
+            let soft_max = self
+                .state
+                .app_strength_report
+                .map(|r| r.a_soft_limit.max(r.b_soft_limit).max(1) as f64)
+                .unwrap_or(200.0);
+
+            let channel_a_name = self.tr("Channel A", "A 通道");
+            let channel_b_name = self.tr("Channel B", "B 通道");
+            let line_a = Line::new(PlotPoints::from(points_a))
+                .name(channel_a_name)
+                .color(egui::Color32::from_rgb(64, 160, 255));
+            let line_b = Line::new(PlotPoints::from(points_b))
+                .name(channel_b_name)
+                .color(egui::Color32::from_rgb(255, 128, 64));
+
+            Plot::new("output_strength_trend_plot")
+                .height(180.0)
+                .include_y(0.0)
+                .include_y(soft_max)
+                .legend(Legend::default())
+                .show(ui, |plot_ui| {
+                    plot_ui.line(line_a);
+                    plot_ui.line(line_b);
+                });
+            ui.small(format!(
+                "{}: {}",
+                self.tr("Y max (App soft max)", "纵轴最大值（App 软上限）"),
+                soft_max as u16
+            ));
+
+            ui.small(format!(
+                "{}: A={} B={}",
+                self.tr("Current output", "当前输出"),
+                self.state.output_strengths[0],
+                self.state.output_strengths[1]
+            ));
+        });
+    }
+
     fn sync_engine_settings(&self) {
         self.engine.update_settings(PipelineSettings {
             band_routing: self.state.band_routing,
             strength_ranges: [self.state.strength_range_a, self.state.strength_range_b],
             pulse_items_per_message: 3,
             respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,
+            smooth_strength_enabled: self.state.smooth_strength_enabled,
+            smooth_strength_factor: self.state.normalized_smooth_strength_factor(),
             preferred_output_device_name: self.state.selected_output_device.clone(),
         });
     }
@@ -947,6 +1057,8 @@ impl eframe::App for DgLinkGuiApp {
                         self.draw_strength_range(&mut columns[0]);
                         self.draw_speaker_source_panel(&mut columns[1]);
                     });
+                    ui.separator();
+                    self.draw_strength_history_plot(ui);
                     ui.separator();
                     self.draw_band_editor(ui);
                 });

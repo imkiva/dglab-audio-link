@@ -26,6 +26,8 @@ pub struct PipelineSettings {
     pub strength_ranges: [StrengthRange; 2],
     pub pulse_items_per_message: usize,
     pub respect_app_soft_limit: bool,
+    pub smooth_strength_enabled: bool,
+    pub smooth_strength_factor: f32,
     pub preferred_output_device_name: Option<String>,
 }
 
@@ -36,6 +38,8 @@ impl Default for PipelineSettings {
             strength_ranges: [StrengthRange::new(10, 160), StrengthRange::new(10, 160)],
             pulse_items_per_message: 3,
             respect_app_soft_limit: true,
+            smooth_strength_enabled: true,
+            smooth_strength_factor: 0.30,
             preferred_output_device_name: None,
         }
     }
@@ -47,6 +51,7 @@ pub struct EngineSnapshot {
     pub app_bound: bool,
     pub app_id: Option<String>,
     pub latest_strength: Option<StrengthReport>,
+    pub output_strengths: [u16; 2],
     pub latest_band_values: [f32; BAND_COUNT],
     pub audio_capture_running: bool,
     pub audio_input_device: Option<String>,
@@ -61,6 +66,7 @@ impl Default for EngineSnapshot {
             app_bound: false,
             app_id: None,
             latest_strength: None,
+            output_strengths: [0; 2],
             latest_band_values: [0.0; BAND_COUNT],
             audio_capture_running: false,
             audio_input_device: None,
@@ -135,6 +141,7 @@ impl PipelineEngine {
             snapshot.app_bound = false;
             snapshot.app_id = None;
             snapshot.latest_strength = None;
+            snapshot.output_strengths = [0; 2];
             snapshot.latest_band_values = [0.0; BAND_COUNT];
             snapshot.audio_capture_running = false;
             snapshot.audio_input_device = None;
@@ -155,6 +162,7 @@ impl PipelineEngine {
             let mut app_bound = false;
             let mut channel_active = [false; 2];
             let mut last_strength = [0_u16; 2];
+            let mut smoothed_strength = [0_u16; 2];
             let mut latest_bands = [0.0_f32; BAND_COUNT];
             let mut latest_soft_limits = [200_u16; 2];
             let mut active_output_preference = settings
@@ -221,6 +229,7 @@ impl PipelineEngine {
                                     state.app_connected = true;
                                     state.app_bound = false;
                                     state.app_id = Some(app_id.clone());
+                                    state.output_strengths = [0; 2];
                                     state.last_server_info = Some(format!("app connected: {peer_addr}"));
                                 });
                             }
@@ -261,10 +270,12 @@ impl PipelineEngine {
                                 app_bound = false;
                                 channel_active = [false; 2];
                                 last_strength = [0; 2];
+                                smoothed_strength = [0; 2];
                                 update_snapshot(&snapshot, |state| {
                                     state.app_connected = false;
                                     state.app_bound = false;
                                     state.app_id = None;
+                                    state.output_strengths = [0; 2];
                                     state.last_server_info = Some("app disconnected".to_owned());
                                 });
                             }
@@ -336,6 +347,16 @@ impl PipelineEngine {
                             channel_strengths[0] = channel_strengths[0].min(latest_soft_limits[0]);
                             channel_strengths[1] = channel_strengths[1].min(latest_soft_limits[1]);
                         }
+                        let smooth_factor = local_settings.smooth_strength_factor.clamp(0.05, 1.0);
+                        for idx in 0..2 {
+                            let target = channel_strengths[idx];
+                            smoothed_strength[idx] = if local_settings.smooth_strength_enabled {
+                                smooth_strength_step(smoothed_strength[idx], target, smooth_factor)
+                            } else {
+                                target
+                            };
+                            channel_strengths[idx] = smoothed_strength[idx];
+                        }
 
                         for (idx, channel) in [DglabChannel::A, DglabChannel::B].into_iter().enumerate() {
                             let strength = channel_strengths[idx];
@@ -387,6 +408,10 @@ impl PipelineEngine {
                                 last_strength[idx] = 0;
                             }
                         }
+
+                        update_snapshot(&snapshot, |state| {
+                            state.output_strengths = channel_strengths;
+                        });
                     }
                 }
             }
@@ -397,6 +422,7 @@ impl PipelineEngine {
                 state.app_connected = false;
                 state.app_bound = false;
                 state.app_id = None;
+                state.output_strengths = [0; 2];
                 state.audio_capture_running = false;
                 state.audio_input_device = None;
                 state.last_server_info = Some("pipeline worker stopped".to_owned());
@@ -461,6 +487,7 @@ impl PipelineEngine {
             snapshot.app_connected = false;
             snapshot.app_bound = false;
             snapshot.app_id = None;
+            snapshot.output_strengths = [0; 2];
             snapshot.audio_capture_running = false;
             snapshot.audio_input_device = None;
             snapshot.last_server_info = Some("ws server stopped".to_owned());
@@ -502,9 +529,22 @@ fn build_pulse_items_for_strength(strength: u16, count: usize) -> Vec<String> {
     vec![item; count.max(1)]
 }
 
+fn smooth_strength_step(current: u16, target: u16, factor: f32) -> u16 {
+    let normalized = factor.clamp(0.05, 1.0);
+    let max_step = ((normalized.powf(2.2) * 200.0).round() as u16).clamp(1, 200);
+
+    if current < target {
+        current.saturating_add(max_step).min(target)
+    } else if current > target {
+        current.saturating_sub(max_step).max(target)
+    } else {
+        current
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_pulse_items_for_strength;
+    use super::{build_pulse_items_for_strength, smooth_strength_step};
 
     #[test]
     fn uses_stable_sample_pulse_item() {
@@ -518,5 +558,17 @@ mod tests {
                 "0A0A0A0A0A0A0A0A".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn smooth_step_uses_target_when_factor_is_one() {
+        assert_eq!(smooth_strength_step(20, 100, 1.0), 100);
+    }
+
+    #[test]
+    fn smooth_step_moves_with_rate_limit_and_can_reach_target_exactly() {
+        assert_eq!(smooth_strength_step(20, 100, 0.30), 34);
+        assert_eq!(smooth_strength_step(92, 100, 0.30), 100);
+        assert_eq!(smooth_strength_step(100, 20, 0.30), 86);
     }
 }

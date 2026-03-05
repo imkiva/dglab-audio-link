@@ -25,7 +25,10 @@ pub struct AppState {
     pub app_bound: bool,
     pub app_id: Option<String>,
     pub app_strength_report: Option<StrengthReport>,
+    pub output_strengths: [u16; 2],
     pub auto_limit_with_app_soft_limit: bool,
+    pub smooth_strength_enabled: bool,
+    pub smooth_strength_factor: f32,
     pub last_app_message: Option<String>,
     pub last_server_info: Option<String>,
     pub audio_capture_running: bool,
@@ -62,7 +65,10 @@ impl Default for AppState {
             app_bound: false,
             app_id: None,
             app_strength_report: None,
+            output_strengths: [0; 2],
             auto_limit_with_app_soft_limit: true,
+            smooth_strength_enabled: true,
+            smooth_strength_factor: 0.30,
             last_app_message: None,
             last_server_info: None,
             audio_capture_running: false,
@@ -116,6 +122,10 @@ impl AppState {
             return 200;
         }
         self.app_soft_limit_for_channel(channel).unwrap_or(200)
+    }
+
+    pub fn normalized_smooth_strength_factor(&self) -> f32 {
+        self.smooth_strength_factor.clamp(0.05, 1.0)
     }
 
     pub fn rotate_session_id(&mut self) {
