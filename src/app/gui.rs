@@ -35,13 +35,18 @@ pub struct DgLinkGuiApp {
     qr_error: Option<String>,
     last_qr_payload: String,
     prev_app_bound: bool,
+    last_title_language: UiLanguage,
     last_persisted_settings: PersistedSettings,
     strength_history_started_at: Instant,
     strength_history: VecDeque<(f64, u16, u16)>,
 }
 
-const STRENGTH_HISTORY_MAX_POINTS: usize = 600;
-const STRENGTH_HISTORY_WINDOW_SECONDS: f64 = 60.0;
+const STRENGTH_HISTORY_MAX_POINTS: usize = 300;
+const STRENGTH_HISTORY_WINDOW_SECONDS: f64 = 20.0;
+const STRENGTH_HISTORY_SAMPLE_INTERVAL_SECONDS: f64 = 0.25;
+const REPAINT_ACTIVE_MS: u64 = 120;
+const REPAINT_RUNNING_MS: u64 = 250;
+const REPAINT_IDLE_MS: u64 = 600;
 
 pub fn install_cjk_font(ctx: &egui::Context) {
     #[cfg(target_os = "windows")]
@@ -95,6 +100,7 @@ impl DgLinkGuiApp {
             Ok(None) => {}
             Err(err) => tracing::warn!("failed to load persisted GUI settings: {err}"),
         }
+        let initial_language = state.language;
         let last_persisted_settings = PersistedSettings::from_state(&state);
 
         let mut app = Self {
@@ -104,6 +110,7 @@ impl DgLinkGuiApp {
             qr_error: None,
             last_qr_payload: String::new(),
             prev_app_bound: false,
+            last_title_language: initial_language,
             last_persisted_settings,
             strength_history_started_at: Instant::now(),
             strength_history: VecDeque::new(),
@@ -273,8 +280,8 @@ impl DgLinkGuiApp {
         let smooth_strength_label = self.tr("Smooth strength", "平滑强度");
         let smooth_factor_label = self.tr("Smoothing factor", "平滑系数");
         let smooth_factor_hint = self.tr(
-            "Rate-limited step: lower = slower, higher = faster; still reaches target exactly",
-            "变化率限速：越小越慢，越大越快；但仍会精确到达目标值",
+            "0 = no smoothing, 1 = strongest smoothing (slower but still reaches target)",
+            "0 = 不平滑，1 = 最强平滑（更慢但仍会到达目标）",
         );
         let app_strength_label = self.tr("App strength", "App 强度");
         let no_report_label = self.tr(
@@ -315,7 +322,7 @@ impl DgLinkGuiApp {
             ui.checkbox(&mut self.state.smooth_strength_enabled, smooth_strength_label);
             if self.state.smooth_strength_enabled {
                 ui.add(
-                    egui::Slider::new(&mut self.state.smooth_strength_factor, 0.05..=1.0)
+                    egui::Slider::new(&mut self.state.smooth_strength_factor, 0.0..=1.0)
                         .text(smooth_factor_label),
                 );
                 self.state.smooth_strength_factor = self.state.normalized_smooth_strength_factor();
@@ -952,6 +959,13 @@ impl DgLinkGuiApp {
 
     fn push_strength_history(&mut self, output_strengths: [u16; 2]) {
         let now = self.strength_history_started_at.elapsed().as_secs_f64();
+        if let Some((last_time, last_a, last_b)) = self.strength_history.back_mut() {
+            if now - *last_time < STRENGTH_HISTORY_SAMPLE_INTERVAL_SECONDS {
+                *last_a = output_strengths[0];
+                *last_b = output_strengths[1];
+                return;
+            }
+        }
         self.strength_history
             .push_back((now, output_strengths[0], output_strengths[1]));
 
@@ -969,8 +983,6 @@ impl DgLinkGuiApp {
 
     fn draw_strength_history_plot(&self, ui: &mut egui::Ui) {
         ui.group(|ui| {
-            ui.label(self.tr("Output Strength Trend (A/B)", "输出强度曲线（A/B）"));
-
             if self.strength_history.is_empty() {
                 ui.small(self.tr(
                     "No strength data yet.",
@@ -979,20 +991,16 @@ impl DgLinkGuiApp {
                 return;
             }
 
-            let x_origin = self
-                .strength_history
-                .front()
-                .map(|(t, _, _)| *t)
-                .unwrap_or(0.0);
+            let now = self.strength_history_started_at.elapsed().as_secs_f64();
             let points_a: Vec<[f64; 2]> = self
                 .strength_history
                 .iter()
-                .map(|(t, a, _)| [*t - x_origin, *a as f64])
+                .map(|(t, a, _)| [*t - now, *a as f64])
                 .collect();
             let points_b: Vec<[f64; 2]> = self
                 .strength_history
                 .iter()
-                .map(|(t, _, b)| [*t - x_origin, *b as f64])
+                .map(|(t, _, b)| [*t - now, *b as f64])
                 .collect();
             let soft_max = self
                 .state
@@ -1011,8 +1019,12 @@ impl DgLinkGuiApp {
 
             Plot::new("output_strength_trend_plot")
                 .height(180.0)
+                .include_x(-STRENGTH_HISTORY_WINDOW_SECONDS)
+                .include_x(0.0)
                 .include_y(0.0)
                 .include_y(soft_max)
+                .allow_scroll(false)
+                .allow_zoom(false)
                 .legend(Legend::default())
                 .show(ui, |plot_ui| {
                     plot_ui.line(line_a);
@@ -1031,6 +1043,16 @@ impl DgLinkGuiApp {
                 self.state.output_strengths[1]
             ));
         });
+    }
+
+    fn repaint_interval_ms(&self) -> u64 {
+        if self.state.app_bound || self.state.audio_capture_running {
+            REPAINT_ACTIVE_MS
+        } else if self.engine.is_running() || self.state.running {
+            REPAINT_RUNNING_MS
+        } else {
+            REPAINT_IDLE_MS
+        }
     }
 
     fn sync_engine_settings(&self) {
@@ -1060,9 +1082,12 @@ impl DgLinkGuiApp {
 
 impl eframe::App for DgLinkGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(
-            self.state.language.app_title().to_owned(),
-        ));
+        if self.state.language != self.last_title_language {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(
+                self.state.language.app_title().to_owned(),
+            ));
+            self.last_title_language = self.state.language;
+        }
         self.sync_engine_snapshot();
         self.sync_engine_settings();
         self.refresh_qr_texture_if_needed(ctx);
@@ -1094,20 +1119,25 @@ impl eframe::App for DgLinkGuiApp {
                             self.draw_pairing_panel(ui);
                         });
                     ui.separator();
-                    egui::CollapsingHeader::new(self.tr("Protocol Debug (Manual)", "协议调试（手动）"))
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            self.draw_protocol_debug_panel(ui);
-                        });
-                    ui.separator();
                     ui.columns(2, |columns| {
                         self.draw_strength_range(&mut columns[0]);
                         self.draw_speaker_source_panel(&mut columns[1]);
                     });
                     ui.separator();
-                    self.draw_strength_history_plot(ui);
+                    egui::CollapsingHeader::new(self.tr("Output Strength Trend (A/B)", "输出强度曲线（A/B）"))
+                        .id_salt("output_strength_trend_panel")
+                        .default_open(true)
+                        .show(ui, |ui| {
+                            self.draw_strength_history_plot(ui);
+                        });
                     ui.separator();
                     self.draw_band_editor(ui);
+                    ui.separator();
+                    egui::CollapsingHeader::new(self.tr("Protocol Debug (Manual)", "协议调试（手动）"))
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            self.draw_protocol_debug_panel(ui);
+                        });
                 });
         });
 
@@ -1119,7 +1149,9 @@ impl eframe::App for DgLinkGuiApp {
         self.prev_app_bound = self.state.app_bound;
         self.persist_settings_if_changed();
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(std::time::Duration::from_millis(
+            self.repaint_interval_ms(),
+        ));
     }
 }
 

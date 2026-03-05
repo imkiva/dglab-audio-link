@@ -11,10 +11,12 @@ use crate::{
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const SETTINGS_SCHEMA_VERSION: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PersistedSettings {
+    pub version: u8,
     pub language: UiLanguage,
     pub band_routing: [BandRouting; BAND_COUNT],
     pub strength_range_a: StrengthRange,
@@ -27,6 +29,7 @@ pub struct PersistedSettings {
 impl Default for PersistedSettings {
     fn default() -> Self {
         Self {
+            version: 1,
             language: UiLanguage::En,
             band_routing: [
                 BandRouting::new(true, 0.25, DglabChannel::A),
@@ -37,7 +40,7 @@ impl Default for PersistedSettings {
             strength_range_a: StrengthRange::new(10, 160),
             strength_range_b: StrengthRange::new(10, 160),
             smooth_strength_enabled: true,
-            smooth_strength_factor: 0.30,
+            smooth_strength_factor: 0.70,
             selected_output_device: None,
         }
     }
@@ -46,6 +49,7 @@ impl Default for PersistedSettings {
 impl PersistedSettings {
     pub fn from_state(state: &AppState) -> Self {
         Self {
+            version: SETTINGS_SCHEMA_VERSION,
             language: state.language,
             band_routing: state.band_routing,
             strength_range_a: state.strength_range_a,
@@ -69,9 +73,15 @@ impl PersistedSettings {
     }
 
     fn sanitized(mut self) -> Self {
+        if self.version < SETTINGS_SCHEMA_VERSION {
+            // v1 used inverse semantics for smooth strength factor.
+            self.smooth_strength_factor = 1.0 - self.smooth_strength_factor.clamp(0.0, 1.0);
+        }
+        self.version = SETTINGS_SCHEMA_VERSION;
+
         self.strength_range_a = self.strength_range_a.normalized();
         self.strength_range_b = self.strength_range_b.normalized();
-        self.smooth_strength_factor = self.smooth_strength_factor.clamp(0.05, 1.0);
+        self.smooth_strength_factor = self.smooth_strength_factor.clamp(0.0, 1.0);
 
         for route in &mut self.band_routing {
             route.threshold = route.threshold.clamp(0.0, 1.0);

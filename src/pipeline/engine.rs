@@ -39,7 +39,7 @@ impl Default for PipelineSettings {
             pulse_items_per_message: 3,
             respect_app_soft_limit: true,
             smooth_strength_enabled: true,
-            smooth_strength_factor: 0.30,
+            smooth_strength_factor: 0.70,
             preferred_output_device_name: None,
         }
     }
@@ -347,7 +347,7 @@ impl PipelineEngine {
                             channel_strengths[0] = channel_strengths[0].min(latest_soft_limits[0]);
                             channel_strengths[1] = channel_strengths[1].min(latest_soft_limits[1]);
                         }
-                        let smooth_factor = local_settings.smooth_strength_factor.clamp(0.05, 1.0);
+                        let smooth_factor = local_settings.smooth_strength_factor.clamp(0.0, 1.0);
                         for idx in 0..2 {
                             let target = channel_strengths[idx];
                             smoothed_strength[idx] = if local_settings.smooth_strength_enabled {
@@ -529,9 +529,14 @@ fn build_pulse_items_for_strength(strength: u16, count: usize) -> Vec<String> {
     vec![item; count.max(1)]
 }
 
-fn smooth_strength_step(current: u16, target: u16, factor: f32) -> u16 {
-    let normalized = factor.clamp(0.05, 1.0);
-    let max_step = ((normalized.powf(2.2) * 200.0).round() as u16).clamp(1, 200);
+fn smooth_strength_step(current: u16, target: u16, smoothness: f32) -> u16 {
+    let smoothness = smoothness.clamp(0.0, 1.0);
+    if smoothness <= 0.0 {
+        return target;
+    }
+
+    let response = (1.0 - smoothness).clamp(0.0, 1.0);
+    let max_step = ((response.powf(2.2) * 200.0).round() as u16).clamp(1, 200);
 
     if current < target {
         current.saturating_add(max_step).min(target)
@@ -561,14 +566,20 @@ mod tests {
     }
 
     #[test]
-    fn smooth_step_uses_target_when_factor_is_one() {
-        assert_eq!(smooth_strength_step(20, 100, 1.0), 100);
+    fn smooth_step_uses_target_when_smoothing_is_zero() {
+        assert_eq!(smooth_strength_step(20, 100, 0.0), 100);
     }
 
     #[test]
     fn smooth_step_moves_with_rate_limit_and_can_reach_target_exactly() {
-        assert_eq!(smooth_strength_step(20, 100, 0.30), 34);
-        assert_eq!(smooth_strength_step(92, 100, 0.30), 100);
-        assert_eq!(smooth_strength_step(100, 20, 0.30), 86);
+        assert_eq!(smooth_strength_step(20, 100, 0.70), 34);
+        assert_eq!(smooth_strength_step(92, 100, 0.70), 100);
+        assert_eq!(smooth_strength_step(100, 20, 0.70), 86);
+    }
+
+    #[test]
+    fn smooth_step_with_max_smoothing_moves_by_one_step() {
+        assert_eq!(smooth_strength_step(20, 100, 1.0), 21);
+        assert_eq!(smooth_strength_step(100, 20, 1.0), 99);
     }
 }

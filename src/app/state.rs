@@ -68,7 +68,7 @@ impl Default for AppState {
             output_strengths: [0; 2],
             auto_limit_with_app_soft_limit: true,
             smooth_strength_enabled: true,
-            smooth_strength_factor: 0.30,
+            smooth_strength_factor: 0.70,
             last_app_message: None,
             last_server_info: None,
             audio_capture_running: false,
@@ -125,7 +125,7 @@ impl AppState {
     }
 
     pub fn normalized_smooth_strength_factor(&self) -> f32 {
-        self.smooth_strength_factor.clamp(0.05, 1.0)
+        self.smooth_strength_factor.clamp(0.0, 1.0)
     }
 
     pub fn rotate_session_id(&mut self) {
