@@ -26,6 +26,7 @@ pub struct DgLinkGuiApp {
     qr_texture: Option<egui::TextureHandle>,
     qr_error: Option<String>,
     last_qr_payload: String,
+    prev_app_bound: bool,
 }
 
 pub fn install_cjk_font(ctx: &egui::Context) {
@@ -79,6 +80,7 @@ impl DgLinkGuiApp {
             qr_texture: None,
             qr_error: None,
             last_qr_payload: String::new(),
+            prev_app_bound: false,
         };
         app.refresh_output_device_list();
         app.start_engine();
@@ -86,7 +88,7 @@ impl DgLinkGuiApp {
     }
 
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label("Program WS URL:");
             ui.text_edit_singleline(&mut self.state.websocket_url);
 
@@ -744,33 +746,44 @@ impl eframe::App for DgLinkGuiApp {
         self.sync_engine_snapshot();
         self.sync_engine_settings();
         self.refresh_qr_texture_if_needed(ctx);
+        let collapse_pairing_now = self.state.app_bound && !self.prev_app_bound;
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             self.draw_top_bar(ui);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("DG-Lab Audio Link");
-            ui.label("Windows speaker output -> 4-band analysis -> DGLab A/B waveform output");
-            ui.separator();
-            egui::CollapsingHeader::new("DGLab 3.0 Pairing QR")
-                .default_open(true)
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    self.draw_pairing_panel(ui);
+                    ui.heading("DG-Lab Audio Link");
+                    ui.label("Windows speaker output -> 4-band analysis -> DGLab A/B waveform output");
+                    ui.separator();
+                    egui::CollapsingHeader::new("DGLab 3.0 Pairing QR")
+                        .id_salt("pairing_qr_panel")
+                        .default_open(true)
+                        .open(if collapse_pairing_now {
+                            Some(false)
+                        } else {
+                            None
+                        })
+                        .show(ui, |ui| {
+                            self.draw_pairing_panel(ui);
+                        });
+                    ui.separator();
+                    egui::CollapsingHeader::new("Protocol Debug (Manual)")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            self.draw_protocol_debug_panel(ui);
+                        });
+                    ui.separator();
+                    ui.columns(2, |columns| {
+                        self.draw_strength_range(&mut columns[0]);
+                        self.draw_speaker_source_panel(&mut columns[1]);
+                    });
+                    ui.separator();
+                    self.draw_band_editor(ui);
                 });
-            ui.separator();
-            egui::CollapsingHeader::new("Protocol Debug (Manual)")
-                .default_open(false)
-                .show(ui, |ui| {
-                    self.draw_protocol_debug_panel(ui);
-                });
-            ui.separator();
-            ui.columns(2, |columns| {
-                self.draw_strength_range(&mut columns[0]);
-                self.draw_speaker_source_panel(&mut columns[1]);
-            });
-            ui.separator();
-            self.draw_band_editor(ui);
         });
 
         if self.engine.is_running() && !self.state.running {
@@ -778,6 +791,7 @@ impl eframe::App for DgLinkGuiApp {
         } else if !self.engine.is_running() && self.state.running {
             self.state.running = false;
         }
+        self.prev_app_bound = self.state.app_bound;
 
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
