@@ -1170,7 +1170,7 @@ impl DgLinkGuiApp {
         self.engine.update_settings(PipelineSettings {
             band_routing: self.state.band_routing,
             strength_ranges: [self.state.strength_range_a, self.state.strength_range_b],
-            pulse_items_per_message: 3,
+            pulse_items_per_message: 1,
             auto_pulse_mode: self.state.auto_pulse_mode,
             waveform_contrast: self.state.normalized_waveform_contrast(),
             respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,

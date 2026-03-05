@@ -27,7 +27,7 @@ use crate::{
     signal::mapper::{aggregate_channel_strengths, compute_band_outputs},
 };
 
-const DEFAULT_SEND_INTERVAL_MS: u64 = 300;
+const DEFAULT_SEND_INTERVAL_MS: u64 = 100;
 
 #[derive(Debug, Clone)]
 pub struct PipelineSettings {
@@ -47,7 +47,7 @@ impl Default for PipelineSettings {
         Self {
             band_routing: [BandRouting::default(); BAND_COUNT],
             strength_ranges: [StrengthRange::new(10, 160), StrengthRange::new(10, 160)],
-            pulse_items_per_message: 3,
+            pulse_items_per_message: 1,
             auto_pulse_mode: AutoPulseMode::ByStrength,
             waveform_contrast: 1.8,
             respect_app_soft_limit: true,
@@ -177,6 +177,7 @@ impl PipelineEngine {
             let mut last_strength = [0_u16; 2];
             let mut smoothed_strength = [0_u16; 2];
             let mut latest_bands = [0.0_f32; BAND_COUNT];
+            let mut pending_peak_bands = [0.0_f32; BAND_COUNT];
             let mut latest_soft_limits = [200_u16; 2];
             let mut active_output_preference = settings
                 .lock()
@@ -301,6 +302,9 @@ impl PipelineEngine {
                     maybe_bands = band_rx.recv() => {
                         if let Some(bands) = maybe_bands {
                             latest_bands = bands;
+                            for idx in 0..BAND_COUNT {
+                                pending_peak_bands[idx] = pending_peak_bands[idx].max(bands[idx].clamp(0.0, 1.0));
+                            }
                             update_snapshot(&snapshot, |state| {
                                 state.latest_band_values = bands;
                             });
@@ -332,6 +336,7 @@ impl PipelineEngine {
                             } else {
                                 let device_name = capture.selected_device_name().map(str::to_owned);
                                 latest_bands = [0.0; BAND_COUNT];
+                                pending_peak_bands = [0.0; BAND_COUNT];
                                 update_snapshot(&snapshot, |state| {
                                     state.audio_capture_running = true;
                                     state.audio_input_device = device_name.clone();
@@ -350,8 +355,10 @@ impl PipelineEngine {
                             continue;
                         }
 
+                        let sampled_bands =
+                            merge_bands_with_pending_peaks(latest_bands, &mut pending_peak_bands);
                         let outputs = compute_band_outputs(
-                            latest_bands,
+                            sampled_bands,
                             local_settings.band_routing,
                             local_settings.strength_ranges,
                         );
@@ -545,6 +552,18 @@ fn update_snapshot(
     }
 }
 
+fn merge_bands_with_pending_peaks(
+    latest: [f32; BAND_COUNT],
+    pending_peaks: &mut [f32; BAND_COUNT],
+) -> [f32; BAND_COUNT] {
+    let mut merged = [0.0_f32; BAND_COUNT];
+    for idx in 0..BAND_COUNT {
+        merged[idx] = latest[idx].max(pending_peaks[idx]).clamp(0.0, 1.0);
+        pending_peaks[idx] = 0.0;
+    }
+    merged
+}
+
 fn build_pulse_items_for_strength(
     strength: u16,
     mapping_max_strength: u16,
@@ -600,7 +619,9 @@ fn smooth_strength_step(current: u16, target: u16, smoothness: f32) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_pulse_items_for_strength, smooth_strength_step};
+    use super::{
+        build_pulse_items_for_strength, merge_bands_with_pending_peaks, smooth_strength_step,
+    };
     use crate::domain::types::AutoPulseMode;
 
     #[test]
@@ -662,6 +683,15 @@ mod tests {
         let boosted = build_pulse_items_for_strength(120, 200, 1, AutoPulseMode::ByStrength, 1.8);
         assert_eq!(linear[0], "0A0A0A0A3C3C3C3C");
         assert_eq!(boosted[0], "0A0A0A0A44444444");
+    }
+
+    #[test]
+    fn merges_pending_peaks_and_clears_cache() {
+        let latest = [0.2, 0.4, 0.1, 0.3];
+        let mut pending = [0.5, 0.1, 0.7, 0.0];
+        let merged = merge_bands_with_pending_peaks(latest, &mut pending);
+        assert_eq!(merged, [0.5, 0.4, 0.7, 0.3]);
+        assert_eq!(pending, [0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]
