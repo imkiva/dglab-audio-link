@@ -11,7 +11,10 @@ use crate::{
         settings::{self, PersistedSettings},
         state::AppState,
     },
-    audio::capture::{default_output_device_name, list_output_device_names},
+    audio::{
+        analyzer::BAND_RANGES_HZ,
+        capture::{default_output_device_name, list_output_device_names},
+    },
     dglab::{
         pairing,
         protocol::{
@@ -613,6 +616,16 @@ impl DgLinkGuiApp {
                 Self::draw_band_row(language, ui, index, routing, band_value);
                 ui.separator();
             }
+            egui::CollapsingHeader::new(self.tr("Band Help", "频段说明"))
+                .default_open(false)
+                .show(ui, |ui| {
+                    let title = self.tr(
+                        "Each band tracks a different speaker playback frequency range:",
+                        "每个 band 代表扬声器回放中的不同频段：",
+                    );
+                    ui.small(title);
+                    Self::draw_band_help_rows(language, ui);
+                });
         });
     }
 
@@ -655,6 +668,40 @@ impl DgLinkGuiApp {
                     .text(format!("{band_value:.2}")),
             );
         });
+    }
+
+    fn draw_band_help_rows(language: UiLanguage, ui: &mut egui::Ui) {
+        let descriptions = [
+            (
+                "Sub-bass / Bass: kick drum, bass line, heavy low-end.",
+                "超低频/低频：底鼓、贝斯线、厚重低频。",
+            ),
+            (
+                "Low-mid: vocal body, snare weight, guitar fundamentals.",
+                "中低频：人声厚度、军鼓主体、吉他基音。",
+            ),
+            (
+                "Mid-high presence: vocal clarity, lead instruments, attack.",
+                "中高频存在感：人声清晰度、主旋律乐器、攻击感。",
+            ),
+            (
+                "Highs / Air: hi-hat, cymbal sparkle, sibilance details.",
+                "高频/空气感：踩镲、镲片亮度、齿音细节。",
+            ),
+        ];
+
+        for index in 0..BAND_COUNT {
+            let (lo, hi) = BAND_RANGES_HZ[index];
+            let desc = tr(language, descriptions[index].0, descriptions[index].1);
+            ui.small(format!(
+                "{} {} ({:.0}-{:.0} Hz): {}",
+                tr(language, "Band", "频段"),
+                index + 1,
+                lo,
+                hi,
+                desc
+            ));
+        }
     }
 
     fn refresh_qr_texture_if_needed(&mut self, ctx: &egui::Context) {

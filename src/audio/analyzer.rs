@@ -2,7 +2,7 @@ use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 
 use crate::domain::BAND_COUNT;
 
-const BAND_RANGES_HZ: [(f32, f32); BAND_COUNT] = [
+pub const BAND_RANGES_HZ: [(f32, f32); BAND_COUNT] = [
     (20.0, 150.0),
     (150.0, 1_000.0),
     (1_000.0, 4_000.0),
