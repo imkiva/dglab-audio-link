@@ -1,20 +1,29 @@
-use std::{sync::{Arc, Mutex}, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow};
-use tokio::{runtime::Runtime, sync::{mpsc, watch}, task::JoinHandle};
+use tokio::{
+    runtime::Runtime,
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 
 use crate::{
     audio::capture::{LoopbackCapture, LoopbackCaptureConfig},
     dglab::{
         pairing,
         protocol::{
-            MAX_JSON_CHARS, SocketPacket, StrengthControlMode, StrengthReport,
-            build_clear_message, build_pulse_message_from_items, build_strength_message,
-            parse_strength_report,
+            MAX_JSON_CHARS, SocketPacket, StrengthControlMode, StrengthReport, build_clear_message,
+            build_pulse_message_from_items, build_strength_message, parse_strength_report,
         },
         server::{DglabWsServer, DglabWsServerConfig, DglabWsServerControl, DglabWsServerEvent},
     },
-    domain::{BAND_COUNT, types::{BandRouting, DglabChannel, StrengthRange}},
+    domain::{
+        BAND_COUNT,
+        types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},
+    },
     signal::mapper::{aggregate_channel_strengths, compute_band_outputs},
 };
 
@@ -25,6 +34,7 @@ pub struct PipelineSettings {
     pub band_routing: [BandRouting; BAND_COUNT],
     pub strength_ranges: [StrengthRange; 2],
     pub pulse_items_per_message: usize,
+    pub auto_pulse_mode: AutoPulseMode,
     pub respect_app_soft_limit: bool,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
@@ -37,6 +47,7 @@ impl Default for PipelineSettings {
             band_routing: [BandRouting::default(); BAND_COUNT],
             strength_ranges: [StrengthRange::new(10, 160), StrengthRange::new(10, 160)],
             pulse_items_per_message: 3,
+            auto_pulse_mode: AutoPulseMode::ByStrength,
             respect_app_soft_limit: true,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
@@ -376,6 +387,7 @@ impl PipelineEngine {
                                 let pulse_items = build_pulse_items_for_strength(
                                     strength,
                                     local_settings.pulse_items_per_message.max(1).min(8),
+                                    local_settings.auto_pulse_mode,
                                 );
                                 match build_pulse_message_from_items(channel, &pulse_items) {
                                     Ok(pulse_msg) => {
@@ -523,9 +535,27 @@ fn update_snapshot(
     }
 }
 
-fn build_pulse_items_for_strength(strength: u16, count: usize) -> Vec<String> {
-    let _ = strength;
-    let item = "0A0A0A0A0A0A0A0A".to_owned();
+fn build_pulse_items_for_strength(strength: u16, count: usize, mode: AutoPulseMode) -> Vec<String> {
+    const CONTINUOUS_FREQ_HEX: &str = "0A0A0A0A";
+    const MAX_WAVE_STRENGTH: u8 = 100;
+
+    let wave_strength_hex = |wave_strength: u8| format!("{wave_strength:02X}").repeat(4);
+
+    let item = match mode {
+        AutoPulseMode::ByStrength => {
+            let normalized = (strength.min(200) as f32 / 200.0).clamp(0.0, 1.0);
+            let wave_strength = if strength == 0 {
+                0
+            } else {
+                ((normalized * MAX_WAVE_STRENGTH as f32).round() as u8).clamp(1, MAX_WAVE_STRENGTH)
+            };
+            format!("{CONTINUOUS_FREQ_HEX}{}", wave_strength_hex(wave_strength))
+        }
+        AutoPulseMode::AlwaysMax => format!(
+            "{CONTINUOUS_FREQ_HEX}{}",
+            wave_strength_hex(MAX_WAVE_STRENGTH)
+        ),
+    };
     vec![item; count.max(1)]
 }
 
@@ -550,19 +580,47 @@ fn smooth_strength_step(current: u16, target: u16, smoothness: f32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{build_pulse_items_for_strength, smooth_strength_step};
+    use crate::domain::types::AutoPulseMode;
 
     #[test]
-    fn uses_stable_sample_pulse_item() {
-        let items = build_pulse_items_for_strength(123, 4);
+    fn builds_strength_based_pulse_items() {
+        let items = build_pulse_items_for_strength(100, 4, AutoPulseMode::ByStrength);
         assert_eq!(
             items,
             vec![
-                "0A0A0A0A0A0A0A0A".to_owned(),
-                "0A0A0A0A0A0A0A0A".to_owned(),
-                "0A0A0A0A0A0A0A0A".to_owned(),
-                "0A0A0A0A0A0A0A0A".to_owned(),
+                "0A0A0A0A32323232".to_owned(),
+                "0A0A0A0A32323232".to_owned(),
+                "0A0A0A0A32323232".to_owned(),
+                "0A0A0A0A32323232".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn builds_always_max_pulse_items() {
+        let items = build_pulse_items_for_strength(1, 3, AutoPulseMode::AlwaysMax);
+        assert_eq!(
+            items,
+            vec![
+                "0A0A0A0A64646464".to_owned(),
+                "0A0A0A0A64646464".to_owned(),
+                "0A0A0A0A64646464".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn strength_based_pulse_never_contains_gap_pattern_when_strength_is_positive() {
+        let items = build_pulse_items_for_strength(1, 1, AutoPulseMode::ByStrength);
+        assert_eq!(items[0], "0A0A0A0A01010101");
+    }
+
+    #[test]
+    fn strength_based_pulse_uses_valid_v3_ranges() {
+        let zero = build_pulse_items_for_strength(0, 1, AutoPulseMode::ByStrength);
+        let max = build_pulse_items_for_strength(200, 1, AutoPulseMode::ByStrength);
+        assert_eq!(zero[0], "0A0A0A0A00000000");
+        assert_eq!(max[0], "0A0A0A0A64646464");
     }
 
     #[test]

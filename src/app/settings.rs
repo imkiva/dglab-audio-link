@@ -6,12 +6,12 @@ use crate::{
     app::{i18n::UiLanguage, state::AppState},
     domain::{
         BAND_COUNT,
-        types::{BandRouting, DglabChannel, StrengthRange},
+        types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},
     },
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const SETTINGS_SCHEMA_VERSION: u8 = 2;
+const SETTINGS_SCHEMA_VERSION: u8 = 3;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -21,6 +21,7 @@ pub struct PersistedSettings {
     pub band_routing: [BandRouting; BAND_COUNT],
     pub strength_range_a: StrengthRange,
     pub strength_range_b: StrengthRange,
+    pub auto_pulse_mode: AutoPulseMode,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
     pub selected_output_device: Option<String>,
@@ -39,6 +40,7 @@ impl Default for PersistedSettings {
             ],
             strength_range_a: StrengthRange::new(10, 160),
             strength_range_b: StrengthRange::new(10, 160),
+            auto_pulse_mode: AutoPulseMode::ByStrength,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
             selected_output_device: None,
@@ -54,6 +56,7 @@ impl PersistedSettings {
             band_routing: state.band_routing,
             strength_range_a: state.strength_range_a,
             strength_range_b: state.strength_range_b,
+            auto_pulse_mode: state.auto_pulse_mode,
             smooth_strength_enabled: state.smooth_strength_enabled,
             smooth_strength_factor: state.smooth_strength_factor,
             selected_output_device: state.selected_output_device.clone(),
@@ -67,15 +70,19 @@ impl PersistedSettings {
         state.band_routing = normalized.band_routing;
         state.strength_range_a = normalized.strength_range_a;
         state.strength_range_b = normalized.strength_range_b;
+        state.auto_pulse_mode = normalized.auto_pulse_mode;
         state.smooth_strength_enabled = normalized.smooth_strength_enabled;
         state.smooth_strength_factor = normalized.smooth_strength_factor;
         state.selected_output_device = normalized.selected_output_device;
     }
 
     fn sanitized(mut self) -> Self {
-        if self.version < SETTINGS_SCHEMA_VERSION {
+        if self.version < 2 {
             // v1 used inverse semantics for smooth strength factor.
             self.smooth_strength_factor = 1.0 - self.smooth_strength_factor.clamp(0.0, 1.0);
+        }
+        if self.version < 3 {
+            self.auto_pulse_mode = AutoPulseMode::ByStrength;
         }
         self.version = SETTINGS_SCHEMA_VERSION;
 
@@ -87,16 +94,14 @@ impl PersistedSettings {
             route.threshold = route.threshold.clamp(0.0, 1.0);
         }
 
-        self.selected_output_device = self
-            .selected_output_device
-            .and_then(|name| {
-                let trimmed = name.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_owned())
-                }
-            });
+        self.selected_output_device = self.selected_output_device.and_then(|name| {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        });
         self
     }
 }

@@ -37,6 +37,13 @@ impl DglabChannel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AutoPulseMode {
+    #[default]
+    ByStrength,
+    AlwaysMax,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BandRouting {
     pub enabled: bool,

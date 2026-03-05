@@ -23,7 +23,7 @@ use crate::{
     },
     domain::{
         BAND_COUNT,
-        types::{BandRouting, DglabChannel},
+        types::{AutoPulseMode, BandRouting, DglabChannel},
     },
     pipeline::engine::{PipelineEngine, PipelineSettings},
 };
@@ -147,12 +147,10 @@ impl DgLinkGuiApp {
             {
                 self.state.clear_error();
                 if !self.state.refresh_lan_ws_url() {
-                    self.state.set_error(
-                        self.tr(
-                            "No LAN IPv4 detected. URL fell back to 127.0.0.1 (phone cannot connect).",
-                            "未检测到局域网 IPv4，地址已回退到 127.0.0.1（手机无法连接）。",
-                        ),
-                    );
+                    self.state.set_error(self.tr(
+                        "No LAN IPv4 detected. URL fell back to 127.0.0.1 (phone cannot connect).",
+                        "未检测到局域网 IPv4，地址已回退到 127.0.0.1（手机无法连接）。",
+                    ));
                 }
                 self.last_qr_payload.clear();
                 self.restart_engine_if_running();
@@ -167,7 +165,10 @@ impl DgLinkGuiApp {
                 self.restart_engine_if_running();
             }
 
-            if ui.button(self.tr("Copy QR Payload", "复制二维码内容")).clicked() {
+            if ui
+                .button(self.tr("Copy QR Payload", "复制二维码内容"))
+                .clicked()
+            {
                 ui.ctx()
                     .copy_text(pairing::build_qr_payload(&self.state.websocket_url));
             }
@@ -238,8 +239,11 @@ impl DgLinkGuiApp {
                 self.state.app_id.as_deref().unwrap_or("?")
             )
         } else if self.state.app_connected {
-            self.tr("App status: connected, waiting bind", "App 状态：已连接，等待绑定")
-                .to_owned()
+            self.tr(
+                "App status: connected, waiting bind",
+                "App 状态：已连接，等待绑定",
+            )
+            .to_owned()
         } else {
             self.tr("App status: not connected", "App 状态：未连接")
                 .to_owned()
@@ -270,9 +274,14 @@ impl DgLinkGuiApp {
     }
 
     fn draw_strength_range(&mut self, ui: &mut egui::Ui) {
-        let title = self.tr("DGLab Strength Range (A/B, 0-200)", "DGLab 强度范围（A/B，0-200）");
-        let auto_limit_label =
-            self.tr("Auto-limit sliders by App soft limit", "按 App 软上限自动限制滑块");
+        let title = self.tr(
+            "DGLab Strength Range (A/B, 0-200)",
+            "DGLab 强度范围（A/B，0-200）",
+        );
+        let auto_limit_label = self.tr(
+            "Auto-limit sliders by App soft limit",
+            "按 App 软上限自动限制滑块",
+        );
         let channel_a_label = self.tr("Channel A", "A 通道");
         let channel_b_label = self.tr("Channel B", "B 通道");
         let min_label = self.tr("Min", "最小");
@@ -319,14 +328,20 @@ impl DgLinkGuiApp {
                 &mut self.state.auto_limit_with_app_soft_limit,
                 auto_limit_label,
             );
-            ui.checkbox(&mut self.state.smooth_strength_enabled, smooth_strength_label);
+            ui.checkbox(
+                &mut self.state.smooth_strength_enabled,
+                smooth_strength_label,
+            );
             if self.state.smooth_strength_enabled {
                 ui.add(
                     egui::Slider::new(&mut self.state.smooth_strength_factor, 0.0..=1.0)
                         .text(smooth_factor_label),
                 );
                 self.state.smooth_strength_factor = self.state.normalized_smooth_strength_factor();
-                ui.small(format!("{smooth_factor_hint}: {:.2}", self.state.smooth_strength_factor));
+                ui.small(format!(
+                    "{smooth_factor_hint}: {:.2}",
+                    self.state.smooth_strength_factor
+                ));
             }
 
             ui.columns(2, |columns| {
@@ -357,7 +372,10 @@ impl DgLinkGuiApp {
                 ui.small(format!(
                     "{} A:{} B:{} | soft A:{} B:{}",
                     app_strength_label,
-                    report.a_strength, report.b_strength, report.a_soft_limit, report.b_soft_limit
+                    report.a_strength,
+                    report.b_strength,
+                    report.a_soft_limit,
+                    report.b_soft_limit
                 ));
             } else {
                 ui.small(no_report_label);
@@ -372,6 +390,64 @@ impl DgLinkGuiApp {
         });
     }
 
+    fn draw_waveform_panel(&mut self, ui: &mut egui::Ui) {
+        let title = self.tr("Waveform Output", "波形输出");
+        let pulse_mode_label = self.tr("Auto pulse mode", "自动波形模式");
+        let pulse_mode_by_strength = self.tr("By strength", "按强度映射");
+        let pulse_mode_always_max = self.tr("Always max waveform", "波形始终最高");
+        let waveform_scope_note = self.tr(
+            "This mode controls waveform shape only, not channel strength.",
+            "该模式只控制波形形状，不会改变通道强度。",
+        );
+        let by_strength_note = self.tr(
+            "By strength: pulse waveform amplitude follows current mapped strength.",
+            "按强度映射：波形幅度跟随当前映射强度变化。",
+        );
+        let always_max_note = self.tr(
+            "Always max waveform: pulse waveform uses max amplitude while strength still follows the strength panel.",
+            "波形始终最高：波形幅度固定最大，但强度仍由左侧强度面板控制。",
+        );
+        let v3_note = self.tr(
+            "V3 pulse format: 0A0A0A0A + amplitude bytes (00000000..64646464).",
+            "V3 波形格式：0A0A0A0A + 幅度字节（00000000..64646464）。",
+        );
+
+        ui.group(|ui| {
+            ui.label(title);
+            egui::ComboBox::from_id_salt("auto_pulse_mode")
+                .selected_text(match self.state.auto_pulse_mode {
+                    AutoPulseMode::ByStrength => pulse_mode_by_strength,
+                    AutoPulseMode::AlwaysMax => pulse_mode_always_max,
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.state.auto_pulse_mode,
+                        AutoPulseMode::ByStrength,
+                        pulse_mode_by_strength,
+                    );
+                    ui.selectable_value(
+                        &mut self.state.auto_pulse_mode,
+                        AutoPulseMode::AlwaysMax,
+                        pulse_mode_always_max,
+                    );
+                });
+            ui.small(format!(
+                "{}: {}",
+                pulse_mode_label,
+                match self.state.auto_pulse_mode {
+                    AutoPulseMode::ByStrength => pulse_mode_by_strength,
+                    AutoPulseMode::AlwaysMax => pulse_mode_always_max,
+                }
+            ));
+            ui.small(waveform_scope_note);
+            ui.small(match self.state.auto_pulse_mode {
+                AutoPulseMode::ByStrength => by_strength_note,
+                AutoPulseMode::AlwaysMax => always_max_note,
+            });
+            ui.small(v3_note);
+        });
+    }
+
     fn draw_speaker_source_panel(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.label(self.tr("Audio Source (Speaker Loopback)", "音频源（扬声器回环）"));
@@ -381,7 +457,10 @@ impl DgLinkGuiApp {
             ));
 
             ui.horizontal(|ui| {
-                if ui.button(self.tr("Refresh Speakers", "刷新扬声器")).clicked() {
+                if ui
+                    .button(self.tr("Refresh Speakers", "刷新扬声器"))
+                    .clicked()
+                {
                     self.refresh_output_device_list();
                 }
 
@@ -430,11 +509,10 @@ impl DgLinkGuiApp {
                     .unwrap_or(self.tr("default", "默认"))
                     .to_owned();
                 self.state.selected_output_device = next_selection;
-                self.state
-                    .set_protocol_action(format!(
-                        "{} {selected_text}",
-                        self.tr("speaker source switched to", "扬声器源已切换到")
-                    ));
+                self.state.set_protocol_action(format!(
+                    "{} {selected_text}",
+                    self.tr("speaker source switched to", "扬声器源已切换到")
+                ));
             }
 
             if self.state.available_output_devices.is_empty() {
@@ -456,6 +534,22 @@ impl DgLinkGuiApp {
         });
     }
 
+    fn draw_settings_panel(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new(self.tr("Settings", "设置"))
+            .id_salt("settings_panel")
+            .default_open(true)
+            .show(ui, |ui| {
+                self.draw_speaker_source_panel(ui);
+                ui.separator();
+                egui::CollapsingHeader::new(self.tr("Protocol Debug (Manual)", "协议调试（手动）"))
+                    .id_salt("settings_protocol_debug_panel")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        self.draw_protocol_debug_panel(ui);
+                    });
+            });
+    }
+
     fn draw_protocol_debug_panel(&mut self, ui: &mut egui::Ui) {
         let value_label = self.tr("Value", "数值");
         let pulse_hint = self.tr(
@@ -473,77 +567,77 @@ impl DgLinkGuiApp {
             "绑定后可向 App 发送原始控制消息，失败会明确显示。",
         ));
 
-            ui.horizontal(|ui| {
-                ui.label(self.tr("Strength", "强度"));
-                egui::ComboBox::from_id_salt("debug_strength_channel")
-                    .selected_text(self.state.debug_strength_channel.label())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.state.debug_strength_channel,
-                            DglabChannel::A,
-                            DglabChannel::A.label(),
-                        );
-                        ui.selectable_value(
-                            &mut self.state.debug_strength_channel,
-                            DglabChannel::B,
-                            DglabChannel::B.label(),
-                        );
-                    });
+        ui.horizontal(|ui| {
+            ui.label(self.tr("Strength", "强度"));
+            egui::ComboBox::from_id_salt("debug_strength_channel")
+                .selected_text(self.state.debug_strength_channel.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.state.debug_strength_channel,
+                        DglabChannel::A,
+                        DglabChannel::A.label(),
+                    );
+                    ui.selectable_value(
+                        &mut self.state.debug_strength_channel,
+                        DglabChannel::B,
+                        DglabChannel::B.label(),
+                    );
+                });
 
-                egui::ComboBox::from_id_salt("debug_strength_mode")
-                    .selected_text(self.state.debug_strength_mode.label())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.state.debug_strength_mode,
-                            StrengthControlMode::Decrease,
-                            StrengthControlMode::Decrease.label(),
-                        );
-                        ui.selectable_value(
-                            &mut self.state.debug_strength_mode,
-                            StrengthControlMode::Increase,
-                            StrengthControlMode::Increase.label(),
-                        );
-                        ui.selectable_value(
-                            &mut self.state.debug_strength_mode,
-                            StrengthControlMode::SetValue,
-                            StrengthControlMode::SetValue.label(),
-                        );
-                    });
+            egui::ComboBox::from_id_salt("debug_strength_mode")
+                .selected_text(self.state.debug_strength_mode.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.state.debug_strength_mode,
+                        StrengthControlMode::Decrease,
+                        StrengthControlMode::Decrease.label(),
+                    );
+                    ui.selectable_value(
+                        &mut self.state.debug_strength_mode,
+                        StrengthControlMode::Increase,
+                        StrengthControlMode::Increase.label(),
+                    );
+                    ui.selectable_value(
+                        &mut self.state.debug_strength_mode,
+                        StrengthControlMode::SetValue,
+                        StrengthControlMode::SetValue.label(),
+                    );
+                });
 
-                ui.add(
-                    egui::Slider::new(&mut self.state.debug_strength_value, 0..=debug_strength_max)
-                        .text(value_label),
-                );
+            ui.add(
+                egui::Slider::new(&mut self.state.debug_strength_value, 0..=debug_strength_max)
+                    .text(value_label),
+            );
 
-                if ui.button(self.tr("Send Strength", "发送强度")).clicked() {
-                    self.send_debug_strength_message();
-                }
-            });
+            if ui.button(self.tr("Send Strength", "发送强度")).clicked() {
+                self.send_debug_strength_message();
+            }
+        });
 
-            ui.horizontal(|ui| {
-                ui.label(self.tr("Clear", "清空"));
-                egui::ComboBox::from_id_salt("debug_clear_channel")
-                    .selected_text(self.state.debug_clear_channel.label())
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut self.state.debug_clear_channel,
-                            DglabChannel::A,
-                            DglabChannel::A.label(),
-                        );
-                        ui.selectable_value(
-                            &mut self.state.debug_clear_channel,
-                            DglabChannel::B,
-                            DglabChannel::B.label(),
-                        );
-                    });
+        ui.horizontal(|ui| {
+            ui.label(self.tr("Clear", "清空"));
+            egui::ComboBox::from_id_salt("debug_clear_channel")
+                .selected_text(self.state.debug_clear_channel.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.state.debug_clear_channel,
+                        DglabChannel::A,
+                        DglabChannel::A.label(),
+                    );
+                    ui.selectable_value(
+                        &mut self.state.debug_clear_channel,
+                        DglabChannel::B,
+                        DglabChannel::B.label(),
+                    );
+                });
 
-                if ui.button(self.tr("Send Clear", "发送清空")).clicked() {
-                    let message = build_clear_message(self.state.debug_clear_channel);
-                    self.send_manual_protocol_message(message, None);
-                }
-            });
+            if ui.button(self.tr("Send Clear", "发送清空")).clicked() {
+                let message = build_clear_message(self.state.debug_clear_channel);
+                self.send_manual_protocol_message(message, None);
+            }
+        });
 
-            ui.horizontal(|ui| {
+        ui.horizontal(|ui| {
                 ui.label(self.tr("Pulse", "波形"));
                 egui::ComboBox::from_id_salt("debug_pulse_channel")
                     .selected_text(self.state.debug_pulse_channel.label())
@@ -592,25 +686,25 @@ impl DgLinkGuiApp {
                 }
             });
 
-            ui.add(
-                egui::TextEdit::multiline(&mut self.state.debug_pulse_values)
-                    .hint_text(pulse_hint)
-                    .desired_rows(3),
-            );
-            ui.small(self.tr(
-                "Pulse HEX format: 16 hex chars each. Split by spaces, comma, semicolon or new line.",
-                "波形 HEX 格式：每项 16 位十六进制，用空格/逗号/分号/换行分隔。",
-            ));
+        ui.add(
+            egui::TextEdit::multiline(&mut self.state.debug_pulse_values)
+                .hint_text(pulse_hint)
+                .desired_rows(3),
+        );
+        ui.small(self.tr(
+            "Pulse HEX format: 16 hex chars each. Split by spaces, comma, semicolon or new line.",
+            "波形 HEX 格式：每项 16 位十六进制，用空格/逗号/分号/换行分隔。",
+        ));
 
-            if let Some(last) = &self.state.last_protocol_action {
-                ui.small(format!("{}: {last}", self.tr("Last action", "最近操作")));
-            }
-            if let Some(last_app) = &self.state.last_app_message {
-                ui.small(format!(
-                    "{}: {last_app}",
-                    self.tr("Last app msg", "最近 App 消息")
-                ));
-            }
+        if let Some(last) = &self.state.last_protocol_action {
+            ui.small(format!("{}: {last}", self.tr("Last action", "最近操作")));
+        }
+        if let Some(last_app) = &self.state.last_app_message {
+            ui.small(format!(
+                "{}: {last_app}",
+                self.tr("Last app msg", "最近 App 消息")
+            ));
+        }
     }
 
     fn draw_band_editor(&mut self, ui: &mut egui::Ui) {
@@ -649,8 +743,11 @@ impl DgLinkGuiApp {
                 format!("{} {}", tr(language, "Band", "频段"), index + 1),
             );
             ui.add(
-                egui::Slider::new(&mut routing.threshold, 0.0..=1.0)
-                    .text(tr(language, "Trigger", "触发值")),
+                egui::Slider::new(&mut routing.threshold, 0.0..=1.0).text(tr(
+                    language,
+                    "Trigger",
+                    "触发值",
+                )),
             );
             routing.threshold = routing.threshold.clamp(0.0, 1.0);
 
@@ -764,8 +861,10 @@ impl DgLinkGuiApp {
             }
             Err(err) => {
                 self.state.available_output_devices.clear();
-                self.state
-                    .set_error(format!("{}: {err}", self.tr("failed to enumerate speakers", "枚举扬声器失败")));
+                self.state.set_error(format!(
+                    "{}: {err}",
+                    self.tr("failed to enumerate speakers", "枚举扬声器失败")
+                ));
             }
         }
     }
@@ -796,8 +895,10 @@ impl DgLinkGuiApp {
             }
             Err(err) => {
                 self.state.running = false;
-                self.state
-                    .set_error(format!("{}: {err}", self.tr("failed to restart ws server", "重启 WS 服务失败")));
+                self.state.set_error(format!(
+                    "{}: {err}",
+                    self.tr("failed to restart ws server", "重启 WS 服务失败")
+                ));
             }
         }
     }
@@ -842,13 +943,14 @@ impl DgLinkGuiApp {
                             self.state.set_error(format!(
                                 "{} {} {} {soft_limit}，{}",
                                 self.tr("channel", "通道"),
-                                channel.label()
-                                ,
+                                channel.label(),
                                 self.tr("already at soft limit", "已到软上限"),
                                 self.tr("increase skipped", "已跳过增加"),
                             ));
-                            self.state
-                                .set_protocol_action(self.tr("send skipped by local guard", "被本地保护逻辑拦截发送").to_owned());
+                            self.state.set_protocol_action(
+                                self.tr("send skipped by local guard", "被本地保护逻辑拦截发送")
+                                    .to_owned(),
+                            );
                             return;
                         }
                         if effective > max_delta {
@@ -890,10 +992,7 @@ impl DgLinkGuiApp {
         let message_for_status = message.clone();
         match self.engine.send_app_message(message) {
             Ok(()) => {
-                let mut action = format!(
-                    "{} {message_for_status}",
-                    self.tr("sent", "已发送")
-                );
+                let mut action = format!("{} {message_for_status}", self.tr("sent", "已发送"));
                 if let Some(note) = note {
                     action.push_str(" (");
                     action.push_str(&note);
@@ -904,11 +1003,10 @@ impl DgLinkGuiApp {
             Err(err) => {
                 self.state
                     .set_error(format!("{}: {err}", self.tr("send failed", "发送失败")));
-                self.state
-                    .set_protocol_action(format!(
-                        "{}: {message_for_status}",
-                        self.tr("send failed", "发送失败")
-                    ));
+                self.state.set_protocol_action(format!(
+                    "{}: {message_for_status}",
+                    self.tr("send failed", "发送失败")
+                ));
             }
         }
     }
@@ -984,10 +1082,7 @@ impl DgLinkGuiApp {
     fn draw_strength_history_plot(&self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             if self.strength_history.is_empty() {
-                ui.small(self.tr(
-                    "No strength data yet.",
-                    "暂无强度数据。",
-                ));
+                ui.small(self.tr("No strength data yet.", "暂无强度数据。"));
                 return;
             }
 
@@ -1060,6 +1155,7 @@ impl DgLinkGuiApp {
             band_routing: self.state.band_routing,
             strength_ranges: [self.state.strength_range_a, self.state.strength_range_b],
             pulse_items_per_message: 3,
+            auto_pulse_mode: self.state.auto_pulse_mode,
             respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,
             smooth_strength_enabled: self.state.smooth_strength_enabled,
             smooth_strength_factor: self.state.normalized_smooth_strength_factor(),
@@ -1107,37 +1203,37 @@ impl eframe::App for DgLinkGuiApp {
                         "Windows 扬声器输出 -> 4 频段分析 -> DGLab A/B 波形输出",
                     ));
                     ui.separator();
-                    egui::CollapsingHeader::new(self.tr("DGLab 3.0 Pairing QR", "DGLab 3.0 配对二维码"))
-                        .id_salt("pairing_qr_panel")
-                        .default_open(true)
-                        .open(if collapse_pairing_now {
-                            Some(false)
-                        } else {
-                            None
-                        })
-                        .show(ui, |ui| {
-                            self.draw_pairing_panel(ui);
-                        });
+                    egui::CollapsingHeader::new(
+                        self.tr("DGLab 3.0 Pairing QR", "DGLab 3.0 配对二维码"),
+                    )
+                    .id_salt("pairing_qr_panel")
+                    .default_open(true)
+                    .open(if collapse_pairing_now {
+                        Some(false)
+                    } else {
+                        None
+                    })
+                    .show(ui, |ui| {
+                        self.draw_pairing_panel(ui);
+                    });
                     ui.separator();
                     ui.columns(2, |columns| {
                         self.draw_strength_range(&mut columns[0]);
-                        self.draw_speaker_source_panel(&mut columns[1]);
+                        self.draw_waveform_panel(&mut columns[1]);
                     });
                     ui.separator();
-                    egui::CollapsingHeader::new(self.tr("Output Strength Trend (A/B)", "输出强度曲线（A/B）"))
-                        .id_salt("output_strength_trend_panel")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            self.draw_strength_history_plot(ui);
-                        });
+                    egui::CollapsingHeader::new(
+                        self.tr("Output Strength Trend (A/B)", "输出强度曲线（A/B）"),
+                    )
+                    .id_salt("output_strength_trend_panel")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        self.draw_strength_history_plot(ui);
+                    });
                     ui.separator();
                     self.draw_band_editor(ui);
                     ui.separator();
-                    egui::CollapsingHeader::new(self.tr("Protocol Debug (Manual)", "协议调试（手动）"))
-                        .default_open(false)
-                        .show(ui, |ui| {
-                            self.draw_protocol_debug_panel(ui);
-                        });
+                    self.draw_settings_panel(ui);
                 });
         });
 
@@ -1149,9 +1245,7 @@ impl eframe::App for DgLinkGuiApp {
         self.prev_app_bound = self.state.app_bound;
         self.persist_settings_if_changed();
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(
-            self.repaint_interval_ms(),
-        ));
+        ctx.request_repaint_after(std::time::Duration::from_millis(self.repaint_interval_ms()));
     }
 }
 

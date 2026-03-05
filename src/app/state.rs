@@ -1,10 +1,10 @@
+use crate::app::i18n::UiLanguage;
 use crate::dglab::protocol::StrengthReport;
 use crate::dglab::{pairing, protocol::StrengthControlMode};
 use crate::domain::{
     BAND_COUNT,
-    types::{BandRouting, DglabChannel, StrengthRange},
+    types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},
 };
-use crate::app::i18n::UiLanguage;
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -27,6 +27,7 @@ pub struct AppState {
     pub app_strength_report: Option<StrengthReport>,
     pub output_strengths: [u16; 2],
     pub auto_limit_with_app_soft_limit: bool,
+    pub auto_pulse_mode: AutoPulseMode,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
     pub last_app_message: Option<String>,
@@ -67,6 +68,7 @@ impl Default for AppState {
             app_strength_report: None,
             output_strengths: [0; 2],
             auto_limit_with_app_soft_limit: true,
+            auto_pulse_mode: AutoPulseMode::ByStrength,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
             last_app_message: None,
