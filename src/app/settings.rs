@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     app::{i18n::UiLanguage, state::AppState},
-    types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel, StrengthRange},
+    types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange},
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const SETTINGS_SCHEMA_VERSION: u8 = 4;
+const SETTINGS_SCHEMA_VERSION: u8 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -19,6 +19,7 @@ pub struct PersistedSettings {
     pub strength_range_a: StrengthRange,
     pub strength_range_b: StrengthRange,
     pub auto_pulse_mode: AutoPulseMode,
+    pub band_drive_mode: BandDriveMode,
     pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
@@ -39,6 +40,7 @@ impl Default for PersistedSettings {
             strength_range_a: StrengthRange::new(10, 160),
             strength_range_b: StrengthRange::new(10, 160),
             auto_pulse_mode: AutoPulseMode::ByStrength,
+            band_drive_mode: BandDriveMode::Energy,
             waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
@@ -56,6 +58,7 @@ impl PersistedSettings {
             strength_range_a: state.strength_range_a,
             strength_range_b: state.strength_range_b,
             auto_pulse_mode: state.auto_pulse_mode,
+            band_drive_mode: state.band_drive_mode,
             waveform_contrast: state.waveform_contrast,
             smooth_strength_enabled: state.smooth_strength_enabled,
             smooth_strength_factor: state.smooth_strength_factor,
@@ -71,6 +74,7 @@ impl PersistedSettings {
         state.strength_range_a = normalized.strength_range_a;
         state.strength_range_b = normalized.strength_range_b;
         state.auto_pulse_mode = normalized.auto_pulse_mode;
+        state.band_drive_mode = normalized.band_drive_mode;
         state.waveform_contrast = normalized.waveform_contrast;
         state.smooth_strength_enabled = normalized.smooth_strength_enabled;
         state.smooth_strength_factor = normalized.smooth_strength_factor;
@@ -88,6 +92,16 @@ impl PersistedSettings {
         if self.version < 4 {
             self.waveform_contrast = 1.8;
         }
+        if self.version < 5 {
+            for route in &mut self.band_routing {
+                route.attack_ms = route.attack_ms.clamp(0, 2_000);
+                route.hold_ms = route.hold_ms.clamp(0, 2_000);
+                route.release_ms = route.release_ms.clamp(0, 2_000);
+            }
+        }
+        if self.version < 6 {
+            self.band_drive_mode = BandDriveMode::Energy;
+        }
         self.version = SETTINGS_SCHEMA_VERSION;
 
         self.strength_range_a = self.strength_range_a.normalized();
@@ -97,6 +111,9 @@ impl PersistedSettings {
 
         for route in &mut self.band_routing {
             route.threshold = route.threshold.clamp(0.0, 1.0);
+            route.attack_ms = route.attack_ms.clamp(0, 2_000);
+            route.hold_ms = route.hold_ms.clamp(0, 2_000);
+            route.release_ms = route.release_ms.clamp(0, 2_000);
         }
 
         self.selected_output_device = self.selected_output_device.and_then(|name| {

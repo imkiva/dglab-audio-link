@@ -9,6 +9,12 @@ pub const BAND_RANGES_HZ: [(f32, f32); BAND_COUNT] = [
     (4_000.0, 12_000.0),
 ];
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BandAnalysisFrame {
+    pub energy: [f32; BAND_COUNT],
+    pub onset: [f32; BAND_COUNT],
+}
+
 pub struct BandAnalyzer {
     sample_rate: f32,
     frame_size: usize,
@@ -16,6 +22,8 @@ pub struct BandAnalyzer {
     fft: std::sync::Arc<dyn Fft<f32>>,
     spectrum: Vec<Complex32>,
     band_peaks: [f32; BAND_COUNT],
+    previous_band_energy: [f32; BAND_COUNT],
+    onset_peaks: [f32; BAND_COUNT],
 }
 
 impl BandAnalyzer {
@@ -31,12 +39,14 @@ impl BandAnalyzer {
             fft,
             spectrum,
             band_peaks: [1e-6; BAND_COUNT],
+            previous_band_energy: [0.0; BAND_COUNT],
+            onset_peaks: [1e-6; BAND_COUNT],
         }
     }
 
-    pub fn analyze(&mut self, samples: &[f32]) -> [f32; BAND_COUNT] {
+    pub fn analyze(&mut self, samples: &[f32]) -> BandAnalysisFrame {
         if self.frame_size == 0 {
-            return [0.0; BAND_COUNT];
+            return BandAnalysisFrame::default();
         }
 
         let mut frame = vec![0.0_f32; self.frame_size];
@@ -70,6 +80,7 @@ impl BandAnalyzer {
         }
 
         let mut normalized = [0.0_f32; BAND_COUNT];
+        let mut onset = [0.0_f32; BAND_COUNT];
         for band_idx in 0..BAND_COUNT {
             let energy = if counts[band_idx] > 0 {
                 (energies[band_idx] / counts[band_idx] as f32).sqrt()
@@ -82,9 +93,21 @@ impl BandAnalyzer {
                 .max(energy)
                 .max(1e-6);
             normalized[band_idx] = (energy / self.band_peaks[band_idx]).clamp(0.0, 1.0);
+
+            let previous_energy = self.previous_band_energy[band_idx];
+            let onset_energy = (energy - previous_energy).max(0.0);
+            self.previous_band_energy[band_idx] = previous_energy.mul_add(0.72, energy * 0.28);
+            self.onset_peaks[band_idx] = self.onset_peaks[band_idx]
+                .mul_add(0.94, 0.0)
+                .max(onset_energy)
+                .max(1e-6);
+            onset[band_idx] = (onset_energy / self.onset_peaks[band_idx]).clamp(0.0, 1.0);
         }
 
-        normalized
+        BandAnalysisFrame {
+            energy: normalized,
+            onset,
+        }
     }
 }
 
@@ -122,7 +145,21 @@ mod tests {
             })
             .collect();
         let bands = analyzer.analyze(&samples);
-        assert!(bands[1] >= bands[0]);
-        assert!(bands[1] >= bands[2]);
+        assert!(bands.energy[1] >= bands.energy[0]);
+        assert!(bands.energy[1] >= bands.energy[2]);
+    }
+
+    #[test]
+    fn onset_is_higher_on_attack_than_on_sustain() {
+        let mut analyzer = BandAnalyzer::new(48_000, 1_024);
+        let attack_samples: Vec<f32> = (0..1_024)
+            .map(|i| {
+                let t = i as f32 / 48_000.0;
+                (2.0 * std::f32::consts::PI * 80.0 * t).sin() * 0.9
+            })
+            .collect();
+        let attack = analyzer.analyze(&attack_samples);
+        let sustain = analyzer.analyze(&attack_samples);
+        assert!(attack.onset[0] >= sustain.onset[0]);
     }
 }

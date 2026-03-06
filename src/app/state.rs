@@ -4,7 +4,7 @@ use dglab_socket_protocol::{
 };
 
 use crate::app::i18n::UiLanguage;
-use crate::types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel, StrengthRange};
+use crate::types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -28,6 +28,7 @@ pub struct AppState {
     pub output_strengths: [u16; 2],
     pub auto_limit_with_app_soft_limit: bool,
     pub auto_pulse_mode: AutoPulseMode,
+    pub band_drive_mode: BandDriveMode,
     pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
@@ -70,6 +71,7 @@ impl Default for AppState {
             output_strengths: [0; 2],
             auto_limit_with_app_soft_limit: true,
             auto_pulse_mode: AutoPulseMode::ByStrength,
+            band_drive_mode: BandDriveMode::Energy,
             waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,

@@ -10,11 +10,22 @@ pub enum AutoPulseMode {
     AlwaysMax,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BandDriveMode {
+    #[default]
+    Energy,
+    Onset,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BandRouting {
     pub enabled: bool,
     pub threshold: f32,
     pub channel: DglabChannel,
+    pub attack_ms: u16,
+    pub hold_ms: u16,
+    pub release_ms: u16,
 }
 
 impl BandRouting {
@@ -23,17 +34,16 @@ impl BandRouting {
             enabled,
             threshold,
             channel,
+            attack_ms: 60,
+            hold_ms: 140,
+            release_ms: 260,
         }
     }
 }
 
 impl Default for BandRouting {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            threshold: 0.5,
-            channel: DglabChannel::A,
-        }
+        Self::new(true, 0.5, DglabChannel::A)
     }
 }
 

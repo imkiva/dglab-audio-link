@@ -3,7 +3,9 @@ use cpal::{DeviceType, FromSample, InterfaceType};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tokio::sync::mpsc;
 
-use crate::{audio::analyzer::BandAnalyzer, types::BAND_COUNT};
+use crate::{
+    audio::analyzer::{BandAnalysisFrame, BandAnalyzer},
+};
 
 #[derive(Debug, Clone)]
 pub struct LoopbackCaptureConfig {
@@ -49,7 +51,7 @@ impl LoopbackCapture {
         self.selected_device_name.as_deref()
     }
 
-    pub fn start(&mut self, band_tx: mpsc::UnboundedSender<[f32; BAND_COUNT]>) -> Result<()> {
+    pub fn start(&mut self, band_tx: mpsc::UnboundedSender<BandAnalysisFrame>) -> Result<()> {
         if self.started {
             return Ok(());
         }
@@ -371,7 +373,7 @@ fn build_stream<T>(
     channels: usize,
     frame_size: usize,
     sample_rate: u32,
-    band_tx: mpsc::UnboundedSender<[f32; BAND_COUNT]>,
+    band_tx: mpsc::UnboundedSender<BandAnalysisFrame>,
     err_fn: impl FnMut(cpal::StreamError) + Send + 'static,
 ) -> Result<cpal::Stream>
 where
@@ -403,7 +405,7 @@ struct CallbackState {
     frame_size: usize,
     channels: usize,
     mono_buffer: Vec<f32>,
-    band_tx: mpsc::UnboundedSender<[f32; BAND_COUNT]>,
+    band_tx: mpsc::UnboundedSender<BandAnalysisFrame>,
 }
 
 impl CallbackState {

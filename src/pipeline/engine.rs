@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
@@ -20,13 +20,15 @@ use tokio::{
 
 use crate::{
     audio::{
+        analyzer::BandAnalysisFrame,
         capture::{LoopbackCapture, LoopbackCaptureConfig},
         mapper::{aggregate_channel_strengths, compute_band_outputs},
     },
-    types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel, StrengthRange},
+    types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange},
 };
 
 const DEFAULT_SEND_INTERVAL_MS: u64 = 100;
+const DEFAULT_BAND_STEP_MS: f32 = 1000.0 / 48.0;
 
 #[derive(Debug, Clone)]
 pub struct PipelineSettings {
@@ -34,6 +36,7 @@ pub struct PipelineSettings {
     pub strength_ranges: [StrengthRange; 2],
     pub pulse_items_per_message: usize,
     pub auto_pulse_mode: AutoPulseMode,
+    pub band_drive_mode: BandDriveMode,
     pub waveform_contrast: f32,
     pub respect_app_soft_limit: bool,
     pub smooth_strength_enabled: bool,
@@ -48,6 +51,7 @@ impl Default for PipelineSettings {
             strength_ranges: [StrengthRange::new(10, 160), StrengthRange::new(10, 160)],
             pulse_items_per_message: 1,
             auto_pulse_mode: AutoPulseMode::ByStrength,
+            band_drive_mode: BandDriveMode::Energy,
             waveform_contrast: 1.8,
             respect_app_soft_limit: true,
             smooth_strength_enabled: true,
@@ -177,13 +181,20 @@ impl PipelineEngine {
             let mut smoothed_strength = [0_u16; 2];
             let mut latest_bands = [0.0_f32; BAND_COUNT];
             let mut pending_peak_bands = [0.0_f32; BAND_COUNT];
+            let mut band_envelopes = [BandEnvelopeState::default(); BAND_COUNT];
+            let mut last_band_update_at: Option<Instant> = None;
             let mut latest_soft_limits = [200_u16; 2];
+            let mut active_band_drive_mode = settings
+                .lock()
+                .ok()
+                .map(|s| s.band_drive_mode)
+                .unwrap_or_default();
             let mut active_output_preference = settings
                 .lock()
                 .ok()
                 .and_then(|s| s.preferred_output_device_name.clone());
 
-            let (band_tx, mut band_rx) = mpsc::unbounded_channel::<[f32; BAND_COUNT]>();
+            let (band_tx, mut band_rx) = mpsc::unbounded_channel::<BandAnalysisFrame>();
             let mut capture = LoopbackCapture::new(LoopbackCaptureConfig {
                 preferred_output_device_name: active_output_preference.clone(),
                 ..LoopbackCaptureConfig::default()
@@ -299,13 +310,33 @@ impl PipelineEngine {
                         }
                     }
                     maybe_bands = band_rx.recv() => {
-                        if let Some(bands) = maybe_bands {
-                            latest_bands = bands;
+                        if let Some(analysis) = maybe_bands {
+                            let now = Instant::now();
+                            let dt_ms = last_band_update_at
+                                .map(|last| now.duration_since(last).as_secs_f32() * 1000.0)
+                                .unwrap_or(DEFAULT_BAND_STEP_MS);
+                            last_band_update_at = Some(now);
+                            let local_settings = settings.lock().map(|s| s.clone()).unwrap_or_default();
+                            let source_bands = match local_settings.band_drive_mode {
+                                BandDriveMode::Energy => analysis.energy,
+                                BandDriveMode::Onset => analysis.onset,
+                            };
+                            let mut enveloped_bands = [0.0_f32; BAND_COUNT];
                             for idx in 0..BAND_COUNT {
-                                pending_peak_bands[idx] = pending_peak_bands[idx].max(bands[idx].clamp(0.0, 1.0));
+                                enveloped_bands[idx] = apply_band_envelope_step(
+                                    &mut band_envelopes[idx],
+                                    source_bands[idx],
+                                    local_settings.band_routing[idx],
+                                    dt_ms,
+                                );
+                            }
+                            latest_bands = enveloped_bands;
+                            for idx in 0..BAND_COUNT {
+                                pending_peak_bands[idx] = pending_peak_bands[idx]
+                                    .max(enveloped_bands[idx].clamp(0.0, 1.0));
                             }
                             update_snapshot(&snapshot, |state| {
-                                state.latest_band_values = bands;
+                                state.latest_band_values = enveloped_bands;
                             });
                         } else {
                             tracing::warn!("audio band channel closed");
@@ -317,6 +348,21 @@ impl PipelineEngine {
                     }
                     _ = ticker.tick() => {
                         let local_settings = settings.lock().map(|s| s.clone()).unwrap_or_default();
+
+                        if local_settings.band_drive_mode != active_band_drive_mode {
+                            active_band_drive_mode = local_settings.band_drive_mode;
+                            latest_bands = [0.0; BAND_COUNT];
+                            pending_peak_bands = [0.0; BAND_COUNT];
+                            band_envelopes = [BandEnvelopeState::default(); BAND_COUNT];
+                            last_band_update_at = None;
+                            update_snapshot(&snapshot, |state| {
+                                state.latest_band_values = [0.0; BAND_COUNT];
+                                state.last_server_info = Some(match active_band_drive_mode {
+                                    BandDriveMode::Energy => "band drive mode switched to energy".to_owned(),
+                                    BandDriveMode::Onset => "band drive mode switched to onset".to_owned(),
+                                });
+                            });
+                        }
 
                         if local_settings.preferred_output_device_name != active_output_preference {
                             let requested_output = local_settings.preferred_output_device_name.clone();
@@ -336,6 +382,8 @@ impl PipelineEngine {
                                 let device_name = capture.selected_device_name().map(str::to_owned);
                                 latest_bands = [0.0; BAND_COUNT];
                                 pending_peak_bands = [0.0; BAND_COUNT];
+                                band_envelopes = [BandEnvelopeState::default(); BAND_COUNT];
+                                last_band_update_at = None;
                                 update_snapshot(&snapshot, |state| {
                                     state.audio_capture_running = true;
                                     state.audio_input_device = device_name.clone();
@@ -542,6 +590,12 @@ impl Drop for PipelineEngine {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct BandEnvelopeState {
+    value: f32,
+    hold_remaining_ms: f32,
+}
+
 fn update_snapshot(
     snapshot: &Arc<Mutex<EngineSnapshot>>,
     mut updater: impl FnMut(&mut EngineSnapshot),
@@ -561,6 +615,51 @@ fn merge_bands_with_pending_peaks(
         pending_peaks[idx] = 0.0;
     }
     merged
+}
+
+fn approach_value(current: f32, target: f32, dt_ms: f32, duration_ms: u16) -> f32 {
+    if duration_ms == 0 {
+        return target;
+    }
+
+    let alpha = (dt_ms / duration_ms as f32).clamp(0.0, 1.0);
+    current + (target - current) * alpha
+}
+
+fn apply_band_envelope_step(
+    state: &mut BandEnvelopeState,
+    target: f32,
+    routing: BandRouting,
+    dt_ms: f32,
+) -> f32 {
+    let target = target.clamp(0.0, 1.0);
+    let dt_ms = dt_ms.max(0.0);
+
+    if target > state.value {
+        state.value = approach_value(state.value, target, dt_ms, routing.attack_ms);
+        if target > 0.0 {
+            state.hold_remaining_ms = routing.hold_ms as f32;
+        }
+    } else if target < state.value {
+        let mut remaining_ms = dt_ms;
+        if state.hold_remaining_ms > 0.0 {
+            let consumed_ms = remaining_ms.min(state.hold_remaining_ms);
+            state.hold_remaining_ms -= consumed_ms;
+            remaining_ms -= consumed_ms;
+        }
+
+        if remaining_ms > 0.0 {
+            state.value = approach_value(state.value, target, remaining_ms, routing.release_ms);
+        }
+    } else if target > 0.0 {
+        state.hold_remaining_ms = routing.hold_ms as f32;
+    }
+
+    if target <= 0.0 && state.value < 0.0001 {
+        state.value = 0.0;
+    }
+
+    state.value.clamp(0.0, 1.0)
 }
 
 fn build_pulse_items_for_strength(
@@ -619,9 +718,10 @@ fn smooth_strength_step(current: u16, target: u16, smoothness: f32) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pulse_items_for_strength, merge_bands_with_pending_peaks, smooth_strength_step,
+        BandEnvelopeState, apply_band_envelope_step, build_pulse_items_for_strength,
+        merge_bands_with_pending_peaks, smooth_strength_step,
     };
-    use crate::types::AutoPulseMode;
+    use crate::types::{AutoPulseMode, BandRouting, DglabChannel};
 
     #[test]
     fn builds_strength_based_pulse_items() {
@@ -691,6 +791,52 @@ mod tests {
         let merged = merge_bands_with_pending_peaks(latest, &mut pending);
         assert_eq!(merged, [0.5, 0.4, 0.7, 0.3]);
         assert_eq!(pending, [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn attack_envelope_rises_gradually() {
+        let mut state = BandEnvelopeState::default();
+        let routing = BandRouting {
+            attack_ms: 100,
+            hold_ms: 140,
+            release_ms: 260,
+            ..BandRouting::new(true, 0.5, DglabChannel::A)
+        };
+        let value = apply_band_envelope_step(&mut state, 1.0, routing, 25.0);
+        assert!((value - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn hold_keeps_peak_before_release() {
+        let mut state = BandEnvelopeState {
+            value: 1.0,
+            hold_remaining_ms: 100.0,
+        };
+        let routing = BandRouting {
+            attack_ms: 60,
+            hold_ms: 100,
+            release_ms: 200,
+            ..BandRouting::new(true, 0.5, DglabChannel::A)
+        };
+        let value = apply_band_envelope_step(&mut state, 0.0, routing, 50.0);
+        assert_eq!(value, 1.0);
+        assert_eq!(state.hold_remaining_ms, 50.0);
+    }
+
+    #[test]
+    fn release_envelope_falls_after_hold_expires() {
+        let mut state = BandEnvelopeState {
+            value: 1.0,
+            hold_remaining_ms: 0.0,
+        };
+        let routing = BandRouting {
+            attack_ms: 60,
+            hold_ms: 100,
+            release_ms: 200,
+            ..BandRouting::new(true, 0.5, DglabChannel::A)
+        };
+        let value = apply_band_envelope_step(&mut state, 0.0, routing, 50.0);
+        assert!((value - 0.75).abs() < 0.001);
     }
 
     #[test]

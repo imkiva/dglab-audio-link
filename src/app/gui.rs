@@ -27,7 +27,7 @@ use crate::{
         capture::{default_output_device_name, list_output_device_names},
     },
     pipeline::engine::{PipelineEngine, PipelineSettings},
-    types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel},
+    types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel},
 };
 
 pub struct DgLinkGuiApp {
@@ -1151,8 +1151,44 @@ impl DgLinkGuiApp {
 
     fn draw_band_editor(&mut self, ui: &mut egui::Ui) {
         let language = self.state.language;
+        let drive_mode_label = self.tr("Band drive mode", "频段驱动模式");
+        let energy_label = self.tr("Energy", "能量");
+        let onset_label = self.tr("Onset", "瞬态");
+        let onset_note = self.tr(
+            "Onset emphasizes sudden hits and beat attacks instead of sustained loudness.",
+            "瞬态模式更强调鼓点/攻击瞬间，而不是持续响度。",
+        );
         ui.group(|ui| {
             ui.label(self.tr("Band Routing (4 bands)", "频段路由（4 个频段）"));
+            egui::ComboBox::from_id_salt("band_drive_mode")
+                .selected_text(match self.state.band_drive_mode {
+                    BandDriveMode::Energy => energy_label,
+                    BandDriveMode::Onset => onset_label,
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.state.band_drive_mode,
+                        BandDriveMode::Energy,
+                        energy_label,
+                    );
+                    ui.selectable_value(
+                        &mut self.state.band_drive_mode,
+                        BandDriveMode::Onset,
+                        onset_label,
+                    );
+                });
+            ui.small(format!(
+                "{}: {}",
+                drive_mode_label,
+                match self.state.band_drive_mode {
+                    BandDriveMode::Energy => energy_label,
+                    BandDriveMode::Onset => onset_label,
+                }
+            ));
+            if self.state.band_drive_mode == BandDriveMode::Onset {
+                ui.small(onset_note);
+            }
+            ui.separator();
             for index in 0..BAND_COUNT {
                 let band_value = self.state.band_values[index];
                 let routing = &mut self.state.band_routing[index];
@@ -1212,6 +1248,21 @@ impl DgLinkGuiApp {
                 egui::ProgressBar::new(band_value.clamp(0.0, 1.0))
                     .desired_width(140.0)
                     .text(format!("{band_value:.2}")),
+            );
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add(
+                egui::Slider::new(&mut routing.attack_ms, 0..=1_000)
+                    .text(tr(language, "Attack ms", "起音 ms")),
+            );
+            ui.add(
+                egui::Slider::new(&mut routing.hold_ms, 0..=1_000)
+                    .text(tr(language, "Hold ms", "保持 ms")),
+            );
+            ui.add(
+                egui::Slider::new(&mut routing.release_ms, 0..=2_000)
+                    .text(tr(language, "Release ms", "释音 ms")),
             );
         });
     }
@@ -1600,6 +1651,7 @@ impl DgLinkGuiApp {
             strength_ranges: [self.state.strength_range_a, self.state.strength_range_b],
             pulse_items_per_message: 1,
             auto_pulse_mode: self.state.auto_pulse_mode,
+            band_drive_mode: self.state.band_drive_mode,
             waveform_contrast: self.state.normalized_waveform_contrast(),
             respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,
             smooth_strength_enabled: self.state.smooth_strength_enabled,
