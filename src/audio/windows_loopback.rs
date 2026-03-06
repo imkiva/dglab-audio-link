@@ -14,10 +14,13 @@ use std::{
 use tokio::sync::mpsc as tokio_mpsc;
 use windows::{
     Win32::{
-        Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK},
+        Foundation::{
+            CloseHandle, HANDLE, RPC_E_CHANGED_MODE, S_FALSE, S_OK, WAIT_OBJECT_0, WAIT_TIMEOUT,
+        },
         Media::{
             Audio::{
-                AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
+                AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
                 IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator,
                 MMDeviceEnumerator, WAVE_FORMAT_PCM, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
             },
@@ -28,6 +31,7 @@ use windows::{
             CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree,
             CoUninitialize,
         },
+        System::Threading::{CreateEventW, WaitForSingleObject},
     },
     core::PCWSTR,
 };
@@ -75,6 +79,26 @@ impl Drop for ComGuard {
         if self.should_uninitialize {
             unsafe { CoUninitialize() };
         }
+    }
+}
+
+struct EventHandle(HANDLE);
+
+impl EventHandle {
+    fn create() -> Result<Self, String> {
+        let handle = unsafe { CreateEventW(None, false, false, None) }
+            .map_err(|err| format!("CreateEventW failed: {err}"))?;
+        Ok(Self(handle))
+    }
+
+    fn raw(&self) -> HANDLE {
+        self.0
+    }
+}
+
+impl Drop for EventHandle {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
     }
 }
 
@@ -243,6 +267,7 @@ fn run_loopback_thread(
 
     let format = parse_mix_format(mix_format_ptr)?;
     let mut default_period = 0_i64;
+    let event_handle = EventHandle::create()?;
     unsafe {
         audio_client
             .GetDevicePeriod(Some(&mut default_period), None)
@@ -250,13 +275,16 @@ fn run_loopback_thread(
         audio_client
             .Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK,
+                AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK,
                 default_period.max(0),
                 0,
                 mix_format_ptr,
                 None,
             )
             .map_err(|err| format!("IAudioClient::Initialize loopback failed: {err}"))?;
+        audio_client
+            .SetEventHandle(event_handle.raw())
+            .map_err(|err| format!("IAudioClient::SetEventHandle failed: {err}"))?;
         CoTaskMemFree(Some(mix_format_ptr.cast()));
     }
 
@@ -273,13 +301,9 @@ fn run_loopback_thread(
     }
 
     let mut state = CaptureState::new(format.sample_rate, frame_size, band_tx);
-    let sleep_duration = reference_time_to_duration(default_period)
-        .checked_div(2)
-        .unwrap_or_else(|| Duration::from_millis(5))
-        .clamp(Duration::from_millis(1), Duration::from_millis(20));
 
     tracing::info!(
-        "Windows loopback capture initialized: endpoint={endpoint_name}, sample_rate={}, channels={}, bits={}, desired_sample_rate={}, desired_channels={}",
+        "Windows loopback capture initialized: endpoint={endpoint_name}, sample_rate={}, channels={}, bits={}, desired_sample_rate={}, desired_channels={}, mode=event-driven",
         format.sample_rate,
         format.channels,
         format.bits_per_sample,
@@ -297,16 +321,21 @@ fn run_loopback_thread(
             break;
         }
 
+        let wait = unsafe { WaitForSingleObject(event_handle.raw(), 100) };
+        if wait == WAIT_TIMEOUT {
+            continue;
+        }
+        if wait != WAIT_OBJECT_0 {
+            return Err(format!(
+                "WaitForSingleObject failed for loopback event: {wait:?}"
+            ));
+        }
+
         let mut packet_size = unsafe {
             capture_client
                 .GetNextPacketSize()
                 .map_err(|err| format!("IAudioCaptureClient::GetNextPacketSize failed: {err}"))?
         };
-
-        if packet_size == 0 {
-            thread::sleep(sleep_duration);
-            continue;
-        }
 
         while packet_size > 0 {
             let mut data_ptr = ptr::null_mut();
@@ -510,12 +539,4 @@ fn decode_pcm24(bytes: &[u8]) -> f32 {
         raw
     };
     signed as f32 / 8_388_608.0
-}
-
-fn reference_time_to_duration(reference_time: i64) -> Duration {
-    if reference_time <= 0 {
-        Duration::from_millis(10)
-    } else {
-        Duration::from_nanos(reference_time as u64 * 100)
-    }
 }

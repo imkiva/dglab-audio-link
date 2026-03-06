@@ -7,6 +7,7 @@ use crate::app::{
     i18n::UiLanguage,
     scenes::{SavedScene, SceneConfig, empty_scene_slots},
 };
+use crate::audio::capture::{DEFAULT_ANALYSIS_FRAME_SIZE, normalize_analysis_frame_size};
 use crate::types::{
     AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange,
     WaveformPattern, WaveformPatternMode, default_band_routing,
@@ -45,6 +46,7 @@ pub struct AppState {
     pub last_server_info: Option<String>,
     pub audio_capture_running: bool,
     pub audio_input_device: Option<String>,
+    pub analysis_frame_size: usize,
     pub available_output_devices: Vec<String>,
     pub selected_output_device: Option<String>,
     pub running: bool,
@@ -86,6 +88,7 @@ impl Default for AppState {
             last_server_info: None,
             audio_capture_running: false,
             audio_input_device: None,
+            analysis_frame_size: DEFAULT_ANALYSIS_FRAME_SIZE,
             available_output_devices: Vec::new(),
             selected_output_device: None,
             running: false,
@@ -181,6 +184,10 @@ impl AppState {
 
     pub fn normalized_waveform_contrast(&self) -> f32 {
         self.waveform_contrast.clamp(1.0, 4.0)
+    }
+
+    pub fn normalized_analysis_frame_size(&self) -> usize {
+        normalize_analysis_frame_size(self.analysis_frame_size)
     }
 
     pub fn rotate_session_id(&mut self) {

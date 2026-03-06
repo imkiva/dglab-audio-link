@@ -15,6 +15,7 @@ use egui_plot::{Legend, Line, Plot, PlotPoints};
 use qrcodegen::{QrCode, QrCodeEcc};
 use tokio::runtime::Runtime;
 
+use crate::audio::capture::ANALYSIS_FRAME_SIZE_OPTIONS;
 use crate::{
     app::{
         i18n::{UiLanguage, tr},
@@ -1190,6 +1191,10 @@ impl DgLinkGuiApp {
                 "Capture source is speaker playback loopback, not microphone.",
                 "采集源是扬声器播放回环，不是麦克风。",
             ));
+            ui.small(self.tr(
+                "Frame size controls analysis latency vs stability. Lower = faster response, higher = smoother bands.",
+                "Frame size 控制分析延迟和稳定性。越小响应越快，越大频段越稳。",
+            ));
 
             ui.horizontal(|ui| {
                 if ui
@@ -1266,6 +1271,26 @@ impl DgLinkGuiApp {
                     self.tr("System default speaker", "系统默认扬声器")
                 ));
             }
+
+            let mut frame_size = self.state.normalized_analysis_frame_size();
+            egui::ComboBox::from_id_salt("analysis_frame_size_selector")
+                .selected_text(frame_size.to_string())
+                .show_ui(ui, |ui| {
+                    for option in ANALYSIS_FRAME_SIZE_OPTIONS {
+                        ui.selectable_value(&mut frame_size, option, option.to_string());
+                    }
+                });
+            if frame_size != self.state.analysis_frame_size {
+                self.state.analysis_frame_size = frame_size;
+                self.state.set_protocol_action(format!(
+                    "{} {frame_size}",
+                    self.tr("analysis frame size switched to", "分析 frame size 已切换到")
+                ));
+            }
+            ui.small(format!(
+                "{}: {frame_size}",
+                self.tr("Analysis frame size", "分析 frame size")
+            ));
         });
     }
 
@@ -1949,6 +1974,7 @@ impl DgLinkGuiApp {
         self.engine.update_settings(PipelineSettings {
             band_routing: self.state.band_routing,
             strength_ranges: [self.state.strength_range_a, self.state.strength_range_b],
+            analysis_frame_size: self.state.normalized_analysis_frame_size(),
             pulse_items_per_message: 1,
             auto_pulse_mode: self.state.auto_pulse_mode,
             band_drive_mode: self.state.band_drive_mode,

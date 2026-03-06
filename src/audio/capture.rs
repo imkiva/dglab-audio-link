@@ -18,6 +18,16 @@ use crate::audio::windows_endpoints;
 #[cfg(target_os = "windows")]
 use crate::audio::windows_loopback;
 
+pub const ANALYSIS_FRAME_SIZE_OPTIONS: [usize; 4] = [256, 512, 1_024, 2_048];
+pub const DEFAULT_ANALYSIS_FRAME_SIZE: usize = 1_024;
+
+pub fn normalize_analysis_frame_size(frame_size: usize) -> usize {
+    ANALYSIS_FRAME_SIZE_OPTIONS
+        .into_iter()
+        .find(|candidate| *candidate == frame_size)
+        .unwrap_or(DEFAULT_ANALYSIS_FRAME_SIZE)
+}
+
 #[derive(Debug, Clone)]
 pub struct LoopbackCaptureConfig {
     pub sample_rate: u32,
@@ -31,7 +41,7 @@ impl Default for LoopbackCaptureConfig {
         Self {
             sample_rate: 48_000,
             channels: 2,
-            frame_size: 1_024,
+            frame_size: DEFAULT_ANALYSIS_FRAME_SIZE,
             preferred_output_device_name: None,
         }
     }

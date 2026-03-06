@@ -40,6 +40,7 @@ const DEFAULT_BAND_STEP_MS: f32 = 1000.0 / 48.0;
 pub struct PipelineSettings {
     pub band_routing: [BandRouting; BAND_COUNT],
     pub strength_ranges: [StrengthRange; 2],
+    pub analysis_frame_size: usize,
     pub pulse_items_per_message: usize,
     pub auto_pulse_mode: AutoPulseMode,
     pub band_drive_mode: BandDriveMode,
@@ -57,6 +58,7 @@ impl Default for PipelineSettings {
         Self {
             band_routing: [BandRouting::default(); BAND_COUNT],
             strength_ranges: [StrengthRange::new(10, 160), StrengthRange::new(10, 160)],
+            analysis_frame_size: crate::audio::capture::DEFAULT_ANALYSIS_FRAME_SIZE,
             pulse_items_per_message: 1,
             auto_pulse_mode: AutoPulseMode::ByStrength,
             band_drive_mode: BandDriveMode::Energy,
@@ -204,9 +206,15 @@ impl PipelineEngine {
                 .lock()
                 .ok()
                 .and_then(|s| s.preferred_output_device_name.clone());
+            let mut active_frame_size = settings
+                .lock()
+                .ok()
+                .map(|s| s.analysis_frame_size)
+                .unwrap_or(crate::audio::capture::DEFAULT_ANALYSIS_FRAME_SIZE);
 
             let (band_tx, mut band_rx) = mpsc::unbounded_channel::<BandAnalysisFrame>();
             let mut capture = LoopbackCapture::new(LoopbackCaptureConfig {
+                frame_size: active_frame_size,
                 preferred_output_device_name: active_output_preference.clone(),
                 ..LoopbackCaptureConfig::default()
             });
@@ -223,11 +231,12 @@ impl PipelineEngine {
                     state.audio_capture_running = true;
                     state.audio_input_device = device_name.clone();
                     state.last_server_info = Some(format!(
-                        "audio capture started on {} (speaker: {})",
+                        "audio capture started on {} (speaker: {}, frame_size: {})",
                         device_name.as_deref().unwrap_or("<unknown>"),
                         active_output_preference
                             .as_deref()
-                            .unwrap_or("default")
+                            .unwrap_or("default"),
+                        active_frame_size,
                     ));
                 });
             }
@@ -376,10 +385,14 @@ impl PipelineEngine {
                             });
                         }
 
-                        if local_settings.preferred_output_device_name != active_output_preference {
+                        if local_settings.preferred_output_device_name != active_output_preference
+                            || local_settings.analysis_frame_size != active_frame_size
+                        {
                             let requested_output = local_settings.preferred_output_device_name.clone();
+                            let requested_frame_size = local_settings.analysis_frame_size;
                             let _ = capture.stop();
                             capture = LoopbackCapture::new(LoopbackCaptureConfig {
+                                frame_size: requested_frame_size,
                                 preferred_output_device_name: requested_output.clone(),
                                 ..LoopbackCaptureConfig::default()
                             });
@@ -401,13 +414,15 @@ impl PipelineEngine {
                                     state.audio_input_device = device_name.clone();
                                     state.latest_band_values = [0.0; BAND_COUNT];
                                     state.last_server_info = Some(format!(
-                                        "audio capture switched to {} (speaker: {})",
+                                        "audio capture switched to {} (speaker: {}, frame_size: {})",
                                         device_name.as_deref().unwrap_or("<unknown>"),
-                                        requested_output.as_deref().unwrap_or("default")
+                                        requested_output.as_deref().unwrap_or("default"),
+                                        requested_frame_size,
                                     ));
                                 });
                             }
                             active_output_preference = requested_output;
+                            active_frame_size = requested_frame_size;
                         }
 
                         if !app_bound {

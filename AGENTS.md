@@ -11,6 +11,9 @@
 - Main app should import protocol helpers directly from `dglab_socket_protocol`; there is no local app-side `dglab` module anymore.
 - Shared app-level types live in `src/types.rs`; do not recreate `src/domain/mod.rs` / `src/domain/types.rs`.
 - Band-to-strength mapping lives in `src/audio/mapper.rs`; do not recreate `src/signal/*` or `src/pipeline/mapper.rs` unless there is a strong reason.
+- Windows speaker enumeration lives in `src/audio/windows_endpoints.rs`.
+- Windows loopback capture lives in `src/audio/windows_loopback.rs`.
+- `src/audio/capture.rs` is now a platform-aware frontend that delegates to native WASAPI on Windows.
 
 ## Protocol-critical rules
 - DGLab V3 pulse item is exactly 16 HEX chars: 8 chars frequency + 8 chars waveform strength.
@@ -26,11 +29,13 @@
 - Respect app soft limit per channel (A/B independently), do not collapse to `min(A, B)`.
 - App strength updates come from `strength-a+b+softA+softB` messages; this is the source of slider caps.
 - Engine settings must be synced before starting or restarting the pipeline worker; otherwise startup can trigger a duplicate audio-capture switch.
+- Factory presets should not overwrite the current A/B strength ranges; user scene slots may persist and restore them.
+- Audio analysis frame size is an operational capture setting, not a creative scene setting.
 
 ## UI layout conventions
 - Keep Band routing controls outside Settings panel.
 - Keep waveform controls in a dedicated panel (separate from strength range).
-- Settings panel should host operational settings (speaker source, protocol debug).
+- Settings panel should host operational settings (speaker source, capture frame size, protocol debug).
 - Protocol debug panel should be collapsible and default collapsed.
 - Right-side log panel is independent from the main scroll area; left and right scrolling must not interfere.
 - Expanding the log panel should grow the window width instead of squeezing the main content area.
@@ -40,7 +45,7 @@
 
 ## Persistence conventions
 - Persist user settings in `settings.json` next to the executable.
-- Keep schema migration explicit; current schema includes waveform mode and smoothing semantics.
+- Keep schema migration explicit; current schema includes scene slots and analysis frame size.
 - Do not persist GUI log viewer state such as log level, selection, or auto-scroll toggle.
 
 ## Verification checklist
@@ -51,3 +56,6 @@
   3. Verify no visible gaps in active continuous waveform mode.
   4. Verify startup only performs one audio capture start for the selected speaker.
   5. Verify the log panel can copy/export raw text and runtime log-level changes take effect immediately.
+  6. Verify Windows speaker selection uses native endpoint enumeration and lists devices that `cpal` may miss.
+  7. Verify Windows loopback capture starts in event-driven WASAPI mode.
+  8. Verify changing analysis frame size restarts capture and persists across relaunch.

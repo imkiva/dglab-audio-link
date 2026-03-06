@@ -8,6 +8,7 @@ use crate::{
         scenes::{SavedScene, empty_scene_slots, normalize_saved_scenes},
         state::AppState,
     },
+    audio::capture::{DEFAULT_ANALYSIS_FRAME_SIZE, normalize_analysis_frame_size},
     types::{
         AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, StrengthRange, WaveformPattern,
         WaveformPatternMode, default_band_routing,
@@ -15,7 +16,7 @@ use crate::{
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const SETTINGS_SCHEMA_VERSION: u8 = 8;
+const SETTINGS_SCHEMA_VERSION: u8 = 9;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -33,6 +34,7 @@ pub struct PersistedSettings {
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
     pub saved_scenes: Vec<Option<SavedScene>>,
+    pub analysis_frame_size: usize,
     pub selected_output_device: Option<String>,
 }
 
@@ -52,6 +54,7 @@ impl Default for PersistedSettings {
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
             saved_scenes: empty_scene_slots(),
+            analysis_frame_size: DEFAULT_ANALYSIS_FRAME_SIZE,
             selected_output_device: None,
         }
     }
@@ -73,6 +76,7 @@ impl PersistedSettings {
             smooth_strength_enabled: state.smooth_strength_enabled,
             smooth_strength_factor: state.smooth_strength_factor,
             saved_scenes: state.saved_scenes.clone(),
+            analysis_frame_size: state.analysis_frame_size,
             selected_output_device: state.selected_output_device.clone(),
         }
         .sanitized()
@@ -92,6 +96,7 @@ impl PersistedSettings {
         state.smooth_strength_enabled = normalized.smooth_strength_enabled;
         state.smooth_strength_factor = normalized.smooth_strength_factor;
         state.saved_scenes = normalized.saved_scenes;
+        state.analysis_frame_size = normalized.analysis_frame_size;
         state.selected_output_device = normalized.selected_output_device;
     }
 
@@ -123,6 +128,9 @@ impl PersistedSettings {
         if self.version < 8 {
             self.saved_scenes = empty_scene_slots();
         }
+        if self.version < 9 {
+            self.analysis_frame_size = DEFAULT_ANALYSIS_FRAME_SIZE;
+        }
         self.version = SETTINGS_SCHEMA_VERSION;
 
         self.strength_range_a = self.strength_range_a.normalized();
@@ -130,6 +138,7 @@ impl PersistedSettings {
         self.waveform_contrast = self.waveform_contrast.clamp(1.0, 4.0);
         self.smooth_strength_factor = self.smooth_strength_factor.clamp(0.0, 1.0);
         self.saved_scenes = normalize_saved_scenes(self.saved_scenes);
+        self.analysis_frame_size = normalize_analysis_frame_size(self.analysis_frame_size);
 
         for route in &mut self.band_routing {
             route.threshold = route.threshold.clamp(0.0, 1.0);
