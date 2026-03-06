@@ -1,0 +1,82 @@
+name: Nightly Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: true
+
+jobs:
+  build-windows-nightly:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUSTUP_TOOLCHAIN: nightly-2025-07-12
+      RELEASE_TAG: nightly
+      RELEASE_TITLE: Nightly
+      ASSET_NAME: dglab-audio-link-nightly-windows-x86_64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          rustup default $env:RUSTUP_TOOLCHAIN
+          rustup target add x86_64-pc-windows-msvc
+          rustc --version
+          cargo --version
+
+      - name: Build release binary
+        shell: pwsh
+        run: cargo build --locked --release
+
+      - name: Prepare asset
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\dglab_audio_link.exe dist\$env:ASSET_NAME -Force
+
+      - name: Update nightly tag
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f $env:RELEASE_TAG $env:GITHUB_SHA
+          git push origin refs/tags/$env:RELEASE_TAG --force
+
+      - name: Write release notes
+        shell: pwsh
+        run: |
+          @"
+          Automated nightly Windows build.
+
+          Commit: $env:GITHUB_SHA
+          Workflow: $env:GITHUB_WORKFLOW
+          Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+          "@ | Set-Content release-notes.txt
+
+      - name: Create or update nightly release
+        shell: pwsh
+        run: |
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release edit $env:RELEASE_TAG --title $env:RELEASE_TITLE --notes-file release-notes.txt --prerelease
+          } else {
+            gh release create $env:RELEASE_TAG --title $env:RELEASE_TITLE --notes-file release-notes.txt --prerelease --latest=false
+          }
+
+      - name: Upload asset
+        shell: pwsh
+        run: gh release upload $env:RELEASE_TAG dist\$env:ASSET_NAME --clobber
