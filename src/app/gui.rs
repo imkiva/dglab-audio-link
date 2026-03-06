@@ -1313,6 +1313,7 @@ impl DgLinkGuiApp {
 
     fn start_engine(&mut self) {
         self.state.clear_error();
+        self.sync_engine_settings();
         match self.engine.start(&self.state.websocket_url) {
             Ok(()) => {
                 self.state.running = true;
@@ -1331,6 +1332,7 @@ impl DgLinkGuiApp {
         }
 
         self.state.clear_error();
+        self.sync_engine_settings();
         match self.engine.restart(&self.state.websocket_url) {
             Ok(()) => {
                 self.state.running = true;
