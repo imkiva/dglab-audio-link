@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    sync::Arc,
+    time::Instant,
+};
 
 use eframe::egui;
 use egui_plot::{Legend, Line, Plot, PlotPoints};
@@ -14,7 +18,7 @@ use dglab_socket_protocol::{
 use crate::{
     app::{
         i18n::{UiLanguage, tr},
-        logs::{GuiLogBuffer, GuiLogLevel, GuiLogReloadHandle},
+        logs::{GuiLogBuffer, GuiLogEntry, GuiLogLevel, GuiLogReloadHandle},
         settings::{self, PersistedSettings},
         state::AppState,
     },
@@ -40,6 +44,8 @@ pub struct DgLinkGuiApp {
     last_persisted_settings: PersistedSettings,
     show_log_panel: bool,
     log_auto_scroll: bool,
+    selected_log_ids: BTreeSet<u64>,
+    log_selection_anchor: Option<u64>,
     strength_history_started_at: Instant,
     strength_history: VecDeque<(f64, u16, u16)>,
 }
@@ -51,7 +57,7 @@ const REPAINT_ACTIVE_MS: u64 = 120;
 const REPAINT_RUNNING_MS: u64 = 250;
 const REPAINT_IDLE_MS: u64 = 600;
 const BASE_WINDOW_WIDTH: f32 = 980.0;
-const LOG_PANEL_WIDTH_HINT: f32 = 360.0;
+const LOG_PANEL_WIDTH_HINT: f32 = 540.0;
 
 pub fn install_cjk_font(ctx: &egui::Context) {
     #[cfg(target_os = "windows")]
@@ -128,6 +134,8 @@ impl DgLinkGuiApp {
             last_persisted_settings,
             show_log_panel: false,
             log_auto_scroll: true,
+            selected_log_ids: BTreeSet::new(),
+            log_selection_anchor: None,
             strength_history_started_at: Instant::now(),
             strength_history: VecDeque::new(),
         };
@@ -182,6 +190,146 @@ impl DgLinkGuiApp {
             current_size.y,
         )));
         self.show_log_panel = show;
+    }
+
+    fn log_entries_text(entries: &[GuiLogEntry]) -> String {
+        entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn log_entries_text_from_refs(entries: &[&GuiLogEntry]) -> String {
+        entries
+            .iter()
+            .map(|entry| entry.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn selected_log_entries<'a>(&self, entries: &'a [GuiLogEntry]) -> Vec<&'a GuiLogEntry> {
+        entries
+            .iter()
+            .filter(|entry| self.selected_log_ids.contains(&entry.id))
+            .collect()
+    }
+
+    fn retain_visible_log_selection(&mut self, entries: &[GuiLogEntry]) {
+        let visible_ids = entries.iter().map(|entry| entry.id).collect::<BTreeSet<_>>();
+        self.selected_log_ids
+            .retain(|id| visible_ids.contains(id));
+        if self
+            .log_selection_anchor
+            .is_some_and(|id| !visible_ids.contains(&id))
+        {
+            self.log_selection_anchor = None;
+        }
+    }
+
+    fn toggle_log_selection(&mut self, entries: &[GuiLogEntry], clicked_id: u64, modifiers: egui::Modifiers) {
+        let clicked_index = match entries.iter().position(|entry| entry.id == clicked_id) {
+            Some(index) => index,
+            None => return,
+        };
+
+        if modifiers.shift {
+            if let Some(anchor_id) = self.log_selection_anchor {
+                if let Some(anchor_index) = entries.iter().position(|entry| entry.id == anchor_id) {
+                    let (start, end) = if anchor_index <= clicked_index {
+                        (anchor_index, clicked_index)
+                    } else {
+                        (clicked_index, anchor_index)
+                    };
+                    self.selected_log_ids.clear();
+                    for entry in &entries[start..=end] {
+                        self.selected_log_ids.insert(entry.id);
+                    }
+                    return;
+                }
+            }
+        }
+
+        if modifiers.command || modifiers.ctrl {
+            if !self.selected_log_ids.insert(clicked_id) {
+                self.selected_log_ids.remove(&clicked_id);
+            }
+            self.log_selection_anchor = Some(clicked_id);
+            return;
+        }
+
+        self.selected_log_ids.clear();
+        self.selected_log_ids.insert(clicked_id);
+        self.log_selection_anchor = Some(clicked_id);
+    }
+
+    fn copy_logs_text(&self, ctx: &egui::Context, text: String) {
+        ctx.copy_text(text);
+    }
+
+    fn export_logs_to_file(&mut self, text: &str) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Text", &["txt"])
+            .set_file_name("dglab-audio-link-log.txt")
+            .save_file()
+        {
+            if let Err(err) = std::fs::write(&path, text) {
+                self.state
+                    .set_error(format!("failed to write log file `{}`: {err}", path.display()));
+            } else {
+                self.state.clear_error();
+                self.state
+                    .set_protocol_action(format!("log exported to {}", path.display()));
+            }
+        }
+    }
+
+    fn emit_test_logs(&self) {
+        tracing::error!(
+            "test error: socket payload rejected {{code=405, size=2048, sample='[\"0A0A...\"]'}}"
+        );
+        tracing::warn!(
+            "test warn: requested speaker `LG ULTRAGEAR` fallback to default endpoint"
+        );
+        tracing::info!(
+            "test info: app connected targetId=7e04d0a7-b6c0-4fa1-b255-5055c47b3374"
+        );
+        tracing::debug!(
+            "test debug: pulse items=[0A0A0A0A00000000,0A0A0A0A64646464] band=[0.17,0.52,0.88,0.11]"
+        );
+        tracing::trace!(
+            "test trace: fft bins=1024 offset=37.25 smooth=0.70 selection='copy all' token=abc123_xyz"
+        );
+    }
+
+    fn log_level_row_fill(
+        level: GuiLogLevel,
+        selected: bool,
+        visuals: &egui::Visuals,
+    ) -> egui::Color32 {
+        let selected_fill = egui::Color32::from_rgb(236, 242, 250);
+        let base = match level {
+            GuiLogLevel::Error => egui::Color32::from_rgb(255, 228, 228),
+            GuiLogLevel::Warn => egui::Color32::from_rgb(255, 242, 214),
+            GuiLogLevel::Info => egui::Color32::TRANSPARENT,
+            GuiLogLevel::Debug => egui::Color32::from_rgb(229, 246, 237),
+            GuiLogLevel::Trace => egui::Color32::from_rgb(238, 238, 238),
+        };
+
+        if selected {
+            if level == GuiLogLevel::Info {
+                return selected_fill;
+            }
+            let highlight = visuals.selection.bg_fill;
+            egui::Color32::from_rgba_unmultiplied(
+                ((u16::from(base.r()) + u16::from(highlight.r())) / 2) as u8,
+                ((u16::from(base.g()) + u16::from(highlight.g())) / 2) as u8,
+                ((u16::from(base.b()) + u16::from(highlight.b())) / 2) as u8,
+                255,
+            )
+        } else {
+            base
+        }
     }
 
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
@@ -281,9 +429,18 @@ impl DgLinkGuiApp {
     }
 
     fn draw_log_panel(&mut self, ui: &mut egui::Ui) {
-        let lines = self.log_buffer.snapshot();
+        let entries = self.log_buffer.snapshot();
+        self.retain_visible_log_selection(&entries);
         let logs_label = self.tr("Logs", "日志");
         let clear_label = self.tr("Clear", "清空");
+        let clear_selection_label = self.tr("Clear Selection", "清空选择");
+        let select_all_label = self.tr("Select All", "全选");
+        let copy_selected_label = self.tr("Copy Selected", "复制已选");
+        let copy_all_label = self.tr("Copy All", "复制全部");
+        let save_selected_label = self.tr("Save Selected", "导出已选");
+        let save_all_label = self.tr("Save All", "导出全部");
+        let generate_test_logs_label = self.tr("Generate Test Logs", "生成测试日志");
+        let copy_item_label = self.tr("Copy", "复制");
         let auto_scroll_label = self.tr(
             "Always scroll to bottom",
             "始终滚动到底部",
@@ -292,11 +449,53 @@ impl DgLinkGuiApp {
         let lines_label = self.tr("Lines", "行数");
         let mut force_scroll_to_bottom = false;
         let mut always_scroll = self.log_auto_scroll;
+        let selected_entries = self.selected_log_entries(&entries);
+        let selected_text = Self::log_entries_text_from_refs(&selected_entries);
+        let all_text = Self::log_entries_text(&entries);
+        let has_selection = !selected_entries.is_empty();
+        let mut copy_single_text: Option<String> = None;
 
         ui.horizontal(|ui| {
             ui.heading(logs_label);
             if ui.button(clear_label).clicked() {
                 self.log_buffer.clear();
+                self.selected_log_ids.clear();
+                self.log_selection_anchor = None;
+            }
+            if ui
+                .add_enabled(has_selection, egui::Button::new(clear_selection_label))
+                .clicked()
+            {
+                self.selected_log_ids.clear();
+                self.log_selection_anchor = None;
+            }
+            if ui.button(select_all_label).clicked() {
+                self.selected_log_ids = entries.iter().map(|entry| entry.id).collect();
+                self.log_selection_anchor = entries.last().map(|entry| entry.id);
+            }
+            if ui.button(generate_test_logs_label).clicked() {
+                self.emit_test_logs();
+            }
+        });
+
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(has_selection, egui::Button::new(copy_selected_label))
+                .clicked()
+            {
+                self.copy_logs_text(ui.ctx(), selected_text.clone());
+            }
+            if ui.button(copy_all_label).clicked() {
+                self.copy_logs_text(ui.ctx(), all_text.clone());
+            }
+            if ui
+                .add_enabled(has_selection, egui::Button::new(save_selected_label))
+                .clicked()
+            {
+                self.export_logs_to_file(&selected_text);
+            }
+            if ui.button(save_all_label).clicked() {
+                self.export_logs_to_file(&all_text);
             }
             let auto_scroll_response = ui.checkbox(&mut always_scroll, auto_scroll_label);
             if auto_scroll_response.changed() && always_scroll {
@@ -307,7 +506,12 @@ impl DgLinkGuiApp {
             }
         });
         ui.separator();
-        ui.small(format!("{lines_label}: {}", lines.len()));
+        ui.small(format!(
+            "{lines_label}: {} | {}: {}",
+            entries.len(),
+            self.tr("Selected", "已选"),
+            selected_entries.len()
+        ));
 
         let scroll_output = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -315,13 +519,95 @@ impl DgLinkGuiApp {
             .show(ui, |ui| {
                 ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
                 ui.spacing_mut().item_spacing.y = 2.0;
-                for line in lines {
-                    ui.label(line);
+                for entry in &entries {
+                    let selected = self.selected_log_ids.contains(&entry.id);
+                    let fill = Self::log_level_row_fill(entry.level, selected, ui.visuals());
+                    let row_width = ui.available_width();
+                    let inner_width = (row_width - 12.0).max(0.0);
+                    let frame = egui::Frame::none()
+                        .fill(fill)
+                        .stroke(if selected {
+                            egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)
+                        } else {
+                            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
+                        })
+                        .inner_margin(egui::Margin::symmetric(6.0, 4.0));
+
+                    let response = frame
+                        .show(ui, |ui| {
+                            ui.set_min_width(inner_width);
+                            ui.set_max_width(inner_width);
+                            let level_text =
+                                format!("[{}]", entry.level.directive().to_ascii_uppercase());
+                            let dark_text = egui::Color32::from_rgb(34, 34, 34);
+                            ui.horizontal_top(|ui| {
+                                ui.add_sized(
+                                    [64.0, 0.0],
+                                    egui::Label::new(
+                                        egui::RichText::new(level_text)
+                                            .monospace()
+                                            .strong()
+                                            .color(dark_text),
+                                    ),
+                                );
+                                ui.scope(|ui| {
+                                    ui.style_mut().visuals.override_text_color = Some(dark_text);
+                                    ui.vertical(|ui| {
+                                        if !entry.timestamp.is_empty() || !entry.target.is_empty() {
+                                            ui.horizontal_wrapped(|ui| {
+                                                if !entry.timestamp.is_empty() {
+                                                    ui.label(
+                                                        egui::RichText::new(&entry.timestamp)
+                                                            .monospace()
+                                                            .small()
+                                                            .color(egui::Color32::from_rgb(90, 90, 90)),
+                                                    );
+                                                }
+                                                if !entry.target.is_empty() {
+                                                    ui.label(
+                                                        egui::RichText::new(&entry.target)
+                                                            .monospace()
+                                                            .small()
+                                                            .color(egui::Color32::from_rgb(70, 90, 110)),
+                                                    );
+                                                }
+                                            });
+                                        }
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(&entry.message)
+                                                    .monospace()
+                                                    .color(dark_text),
+                                            )
+                                            .wrap(),
+                                        );
+                                    });
+                                });
+                            });
+                        })
+                        .response
+                        .interact(egui::Sense::click());
+
+                    if response.clicked() {
+                        let modifiers = ui.input(|i| i.modifiers);
+                        self.toggle_log_selection(&entries, entry.id, modifiers);
+                    }
+
+                    response.context_menu(|ui| {
+                        if ui.button(copy_item_label).clicked() {
+                            copy_single_text = Some(entry.text.clone());
+                            ui.close_menu();
+                        }
+                    });
                 }
                 if force_scroll_to_bottom {
                     ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
                 }
             });
+
+        if let Some(text) = copy_single_text {
+            self.copy_logs_text(ui.ctx(), text);
+        }
 
         let max_scroll_y = (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
         let at_bottom = max_scroll_y <= 1.0
@@ -1352,8 +1638,8 @@ impl eframe::App for DgLinkGuiApp {
 
         if self.show_log_panel {
             egui::SidePanel::right("log_panel")
-                .default_width(360.0)
-                .min_width(240.0)
+                .default_width(LOG_PANEL_WIDTH_HINT)
+                .min_width(360.0)
                 .resizable(true)
                 .show(ctx, |ui| {
                     self.draw_log_panel(ui);

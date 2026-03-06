@@ -20,5 +20,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 qrcodegen = "1.8"
 cpal = "0.17"
+rfd = "0.15"
 rustfft = "6"
 sys-locale = "0.3"

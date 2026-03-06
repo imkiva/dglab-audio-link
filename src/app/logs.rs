@@ -8,6 +8,16 @@ use tracing_subscriber::{EnvFilter, Registry, reload};
 
 const MAX_LOG_LINES: usize = 4_000;
 
+#[derive(Debug, Clone)]
+pub struct GuiLogEntry {
+    pub id: u64,
+    pub level: GuiLogLevel,
+    pub timestamp: String,
+    pub target: String,
+    pub message: String,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiLogLevel {
     Error,
@@ -48,6 +58,32 @@ impl GuiLogLevel {
             _ => Self::Info,
         }
     }
+
+    pub fn from_log_line(line: &str) -> Self {
+        let uppercase = line.to_ascii_uppercase();
+        if uppercase.contains(" ERROR ") {
+            Self::Error
+        } else if uppercase.contains(" WARN ") {
+            Self::Warn
+        } else if uppercase.contains(" DEBUG ") {
+            Self::Debug
+        } else if uppercase.contains(" TRACE ") {
+            Self::Trace
+        } else {
+            Self::Info
+        }
+    }
+
+    pub fn from_level_token(token: &str) -> Option<Self> {
+        match token.trim().to_ascii_uppercase().as_str() {
+            "ERROR" => Some(Self::Error),
+            "WARN" => Some(Self::Warn),
+            "INFO" => Some(Self::Info),
+            "DEBUG" => Some(Self::Debug),
+            "TRACE" => Some(Self::Trace),
+            _ => None,
+        }
+    }
 }
 
 pub type GuiLogReloadHandle = reload::Handle<EnvFilter, Registry>;
@@ -59,7 +95,8 @@ pub struct GuiLogBuffer {
 
 #[derive(Default)]
 struct GuiLogBufferInner {
-    lines: VecDeque<String>,
+    entries: VecDeque<GuiLogEntry>,
+    next_id: u64,
     partial_line: String,
 }
 
@@ -68,16 +105,16 @@ impl GuiLogBuffer {
         Self::default()
     }
 
-    pub fn snapshot(&self) -> Vec<String> {
+    pub fn snapshot(&self) -> Vec<GuiLogEntry> {
         self.inner
             .lock()
-            .map(|inner| inner.lines.iter().cloned().collect())
+            .map(|inner| inner.entries.iter().cloned().collect())
             .unwrap_or_default()
     }
 
     pub fn clear(&self) {
         if let Ok(mut inner) = self.inner.lock() {
-            inner.lines.clear();
+            inner.entries.clear();
             inner.partial_line.clear();
         }
     }
@@ -89,16 +126,51 @@ impl GuiLogBuffer {
                 if let Some(line) = chunk.strip_suffix('\n') {
                     inner.partial_line.push_str(line.trim_end_matches('\r'));
                     let completed = std::mem::take(&mut inner.partial_line);
-                    inner.lines.push_back(completed);
+                    let entry = parse_log_entry(inner.next_id, completed);
+                    inner.next_id = inner.next_id.saturating_add(1);
+                    inner.entries.push_back(entry);
                 } else {
                     inner.partial_line.push_str(chunk);
                 }
             }
 
-            while inner.lines.len() > MAX_LOG_LINES {
-                inner.lines.pop_front();
+            while inner.entries.len() > MAX_LOG_LINES {
+                inner.entries.pop_front();
             }
         }
+    }
+}
+
+fn parse_log_entry(id: u64, text: String) -> GuiLogEntry {
+    let trimmed = text.trim();
+    let mut parts = trimmed.splitn(3, ' ');
+    let first = parts.next().unwrap_or_default();
+    let second = parts.next().unwrap_or_default();
+    let third = parts.next().unwrap_or_default();
+
+    let (timestamp, level, remainder) = if let Some(level) = GuiLogLevel::from_level_token(second) {
+        (first.to_owned(), level, third)
+    } else {
+        (
+            String::new(),
+            GuiLogLevel::from_log_line(trimmed),
+            trimmed,
+        )
+    };
+
+    let (target, message) = if let Some((target, message)) = remainder.split_once(": ") {
+        (target.trim().to_owned(), message.to_owned())
+    } else {
+        (String::new(), remainder.to_owned())
+    };
+
+    GuiLogEntry {
+        id,
+        level,
+        timestamp,
+        target,
+        message,
+        text,
     }
 }
 
