@@ -1,5 +1,7 @@
 # dglab-audio-link
 
+**OpenAI Codex 匠心打造，代码含人量 0%**
+
 Rust desktop app (nightly toolchain) for:
 
 - Capturing Windows speaker output.
