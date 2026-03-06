@@ -1,9 +1,22 @@
-use anyhow::{Result, anyhow};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{DeviceType, FromSample, InterfaceType};
+use anyhow::Result;
+#[cfg(not(target_os = "windows"))]
+use anyhow::anyhow;
+#[cfg(not(target_os = "windows"))]
+use cpal::FromSample;
+#[cfg(not(target_os = "windows"))]
+use cpal::traits::StreamTrait;
+use cpal::traits::{DeviceTrait, HostTrait};
+#[cfg(not(target_os = "windows"))]
+use cpal::{DeviceType, InterfaceType};
 use tokio::sync::mpsc;
 
-use crate::audio::analyzer::{BandAnalysisFrame, BandAnalyzer};
+use crate::audio::analyzer::BandAnalysisFrame;
+#[cfg(not(target_os = "windows"))]
+use crate::audio::analyzer::BandAnalyzer;
+#[cfg(target_os = "windows")]
+use crate::audio::windows_endpoints;
+#[cfg(target_os = "windows")]
+use crate::audio::windows_loopback;
 
 #[derive(Debug, Clone)]
 pub struct LoopbackCaptureConfig {
@@ -26,7 +39,10 @@ impl Default for LoopbackCaptureConfig {
 
 pub struct LoopbackCapture {
     pub config: LoopbackCaptureConfig,
+    #[cfg(not(target_os = "windows"))]
     stream: Option<cpal::Stream>,
+    #[cfg(target_os = "windows")]
+    native: Option<windows_loopback::WindowsLoopbackCapture>,
     selected_device_name: Option<String>,
     started: bool,
 }
@@ -35,7 +51,10 @@ impl LoopbackCapture {
     pub fn new(config: LoopbackCaptureConfig) -> Self {
         Self {
             config,
+            #[cfg(not(target_os = "windows"))]
             stream: None,
+            #[cfg(target_os = "windows")]
+            native: None,
             selected_device_name: None,
             started: false,
         }
@@ -54,61 +73,90 @@ impl LoopbackCapture {
             return Ok(());
         }
 
-        let host = cpal::default_host();
-        let (device, selected_name, selected_by_output_match) =
-            select_input_device(&host, self.config.preferred_output_device_name.as_deref())?;
-        let supported = choose_supported_config(&device, &self.config)?;
-        let sample_format = supported.sample_format();
-        let stream_config = supported.config();
+        #[cfg(target_os = "windows")]
+        {
+            let (native, ready, selected_by_output_match) =
+                windows_loopback::start(&self.config, band_tx).map_err(anyhow::Error::msg)?;
+            let selected_name = native.selected_device_name().to_owned();
+            self.native = Some(native);
+            self.selected_device_name = Some(selected_name.clone());
+            tracing::info!(
+                "audio capture started: device={selected_name}, sample_rate={}, channels={}, frame_size={}, output_match={selected_by_output_match}",
+                ready.sample_rate,
+                ready.channels,
+                self.config.frame_size
+            );
+            self.started = true;
+            return Ok(());
+        }
 
-        let channels = stream_config.channels as usize;
-        let frame_size = self.config.frame_size;
-        let sample_rate = stream_config.sample_rate;
-        let band_tx_for_stream = band_tx.clone();
+        #[cfg(not(target_os = "windows"))]
+        {
+            let host = cpal::default_host();
+            let (device, selected_name, selected_by_output_match) =
+                select_input_device(&host, self.config.preferred_output_device_name.as_deref())?;
+            let supported = choose_supported_config(&device, &self.config)?;
+            let sample_format = supported.sample_format();
+            let stream_config = supported.config();
 
-        let stream = match sample_format {
-            cpal::SampleFormat::F32 => build_stream::<f32>(
-                &device,
-                &stream_config,
-                channels,
-                frame_size,
-                sample_rate,
-                band_tx_for_stream,
-                |err| tracing::error!("audio input stream error: {err}"),
-            )?,
-            cpal::SampleFormat::I16 => build_stream::<i16>(
-                &device,
-                &stream_config,
-                channels,
-                frame_size,
-                sample_rate,
-                band_tx_for_stream,
-                |err| tracing::error!("audio input stream error: {err}"),
-            )?,
-            cpal::SampleFormat::U16 => build_stream::<u16>(
-                &device,
-                &stream_config,
-                channels,
-                frame_size,
-                sample_rate,
-                band_tx_for_stream,
-                |err| tracing::error!("audio input stream error: {err}"),
-            )?,
-            _ => anyhow::bail!("unsupported input sample format: {sample_format:?}"),
-        };
-        stream.play()?;
+            let channels = stream_config.channels as usize;
+            let frame_size = self.config.frame_size;
+            let sample_rate = stream_config.sample_rate;
+            let band_tx_for_stream = band_tx.clone();
 
-        self.stream = Some(stream);
-        self.selected_device_name = Some(selected_name.clone());
-        tracing::info!(
-            "audio capture started: device={selected_name}, sample_rate={sample_rate}, channels={channels}, frame_size={frame_size}, output_match={selected_by_output_match}"
-        );
-        self.started = true;
-        Ok(())
+            let stream = match sample_format {
+                cpal::SampleFormat::F32 => build_stream::<f32>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    frame_size,
+                    sample_rate,
+                    band_tx_for_stream,
+                    |err| tracing::error!("audio input stream error: {err}"),
+                )?,
+                cpal::SampleFormat::I16 => build_stream::<i16>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    frame_size,
+                    sample_rate,
+                    band_tx_for_stream,
+                    |err| tracing::error!("audio input stream error: {err}"),
+                )?,
+                cpal::SampleFormat::U16 => build_stream::<u16>(
+                    &device,
+                    &stream_config,
+                    channels,
+                    frame_size,
+                    sample_rate,
+                    band_tx_for_stream,
+                    |err| tracing::error!("audio input stream error: {err}"),
+                )?,
+                _ => anyhow::bail!("unsupported input sample format: {sample_format:?}"),
+            };
+            stream.play()?;
+
+            self.stream = Some(stream);
+            self.selected_device_name = Some(selected_name.clone());
+            tracing::info!(
+                "audio capture started: device={selected_name}, sample_rate={sample_rate}, channels={channels}, frame_size={frame_size}, output_match={selected_by_output_match}"
+            );
+            self.started = true;
+            Ok(())
+        }
     }
 
     pub fn stop(&mut self) -> Result<()> {
-        self.stream = None;
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.stream = None;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(mut native) = self.native.take() {
+                native.stop().map_err(anyhow::Error::msg)?;
+            }
+        }
         self.selected_device_name = None;
         self.started = false;
         Ok(())
@@ -121,6 +169,7 @@ impl Default for LoopbackCapture {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn choose_supported_config(
     device: &cpal::Device,
     desired: &LoopbackCaptureConfig,
@@ -177,6 +226,7 @@ fn choose_supported_config(
     ))
 }
 
+#[cfg(not(target_os = "windows"))]
 fn select_input_device(
     host: &cpal::Host,
     preferred_output_device_name: Option<&str>,
@@ -192,9 +242,7 @@ fn select_input_device(
     // Primary path on Windows WASAPI: select output endpoint and open it as loopback input.
     let mut best_output_any: Option<(i32, cpal::Device, String)> = None;
     let mut best_output_preferred_match: Option<(i32, cpal::Device, String)> = None;
-    for device in host.output_devices()? {
-        let description = device.description().ok();
-        let name = device_name(&device);
+    for (device, name, description) in enumerate_output_candidates(host)? {
         let name_l = name.to_ascii_lowercase();
         let mut score = 10_i32;
         let mut preferred_match = false;
@@ -244,6 +292,12 @@ fn select_input_device(
     if let Some((_score, device, name)) = best_output_any {
         if preferred_output_name.is_some() {
             let preferred = preferred_output_device_name.unwrap_or("<unknown>");
+            #[cfg(target_os = "windows")]
+            if windows_endpoints::contains_render_endpoint_name(preferred).unwrap_or(false) {
+                return Err(anyhow!(
+                    "speaker `{preferred}` is visible to Windows, but the current capture backend cannot open its loopback endpoint yet"
+                ));
+            }
             tracing::warn!(
                 "requested speaker `{preferred}` not matched exactly; falling back to output endpoint `{name}`"
             );
@@ -340,10 +394,16 @@ fn select_input_device(
 }
 
 pub fn list_output_device_names() -> Result<Vec<String>> {
+    #[cfg(target_os = "windows")]
+    match windows_endpoints::list_render_endpoint_names() {
+        Ok(names) if !names.is_empty() => return Ok(names),
+        Ok(_) => {}
+        Err(err) => tracing::warn!("Windows native render enumeration failed: {err}"),
+    }
+
     let host = cpal::default_host();
     let mut names = Vec::new();
-    for device in host.output_devices()? {
-        let name = device_name(&device);
+    for (_device, name, _description) in enumerate_output_candidates(&host)? {
         if !name.trim().is_empty() {
             names.push(name);
         }
@@ -354,17 +414,70 @@ pub fn list_output_device_names() -> Result<Vec<String>> {
 }
 
 pub fn default_output_device_name() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    if let Ok(default_name) = windows_endpoints::default_render_endpoint_name() {
+        if default_name.is_some() {
+            return default_name;
+        }
+    }
+
     let host = cpal::default_host();
     host.default_output_device().map(|d| device_name(&d))
 }
 
-fn device_name(device: &cpal::Device) -> String {
-    device
-        .description()
-        .map(|desc| desc.name().to_owned())
-        .unwrap_or_else(|_| "<unknown>".to_owned())
+fn enumerate_output_candidates(
+    host: &cpal::Host,
+) -> Result<Vec<(cpal::Device, String, Option<cpal::DeviceDescription>)>> {
+    let mut candidates = Vec::new();
+
+    for device in host.devices()? {
+        let description = device.description().ok();
+        let name = device_name(&device);
+        let has_default_output = device.default_output_config().is_ok();
+        let has_supported_output = device
+            .supported_output_configs()
+            .is_ok_and(|mut iter| iter.next().is_some());
+
+        tracing::debug!(
+            "audio device probe: name={name}, default_output={has_default_output}, supported_output={has_supported_output}, type={:?}, interface={:?}",
+            description.as_ref().map(|desc| desc.device_type()),
+            description.as_ref().map(|desc| desc.interface_type())
+        );
+
+        if has_default_output || has_supported_output {
+            candidates.push((device, name, description));
+        }
+    }
+
+    Ok(candidates)
 }
 
+fn device_name(device: &cpal::Device) -> String {
+    let Ok(desc) = device.description() else {
+        return "<unknown>".to_owned();
+    };
+
+    let name = desc.name().trim();
+    let manufacturer = desc.manufacturer().map(str::trim).unwrap_or_default();
+
+    if !name.is_empty() && !manufacturer.is_empty() {
+        let name_l = name.to_ascii_lowercase();
+        let manufacturer_l = manufacturer.to_ascii_lowercase();
+        if !name_l.contains(&manufacturer_l) {
+            return format!("{name} / {manufacturer}");
+        }
+    }
+
+    if !name.is_empty() {
+        name.to_owned()
+    } else if !manufacturer.is_empty() {
+        manufacturer.to_owned()
+    } else {
+        "<unknown>".to_owned()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
@@ -398,6 +511,7 @@ where
     Ok(stream)
 }
 
+#[cfg(not(target_os = "windows"))]
 struct CallbackState {
     analyzer: BandAnalyzer,
     frame_size: usize,
@@ -406,6 +520,7 @@ struct CallbackState {
     band_tx: mpsc::UnboundedSender<BandAnalysisFrame>,
 }
 
+#[cfg(not(target_os = "windows"))]
 impl CallbackState {
     fn on_samples<T: cpal::Sample>(&mut self, data: &[T])
     where
