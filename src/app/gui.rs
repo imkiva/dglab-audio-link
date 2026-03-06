@@ -19,6 +19,10 @@ use crate::{
     app::{
         i18n::{UiLanguage, tr},
         logs::{GuiLogBuffer, GuiLogEntry, GuiLogLevel, GuiLogReloadHandle},
+        scenes::{
+            FACTORY_SCENE_PRESETS, FactorySceneId, SavedScene, USER_SCENE_SLOT_COUNT,
+            factory_scene_preset,
+        },
         settings::{self, PersistedSettings},
         state::AppState,
     },
@@ -26,7 +30,7 @@ use crate::{
     pipeline::engine::{PipelineEngine, PipelineSettings},
     types::{
         AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, WaveformPattern,
-        WaveformPatternMode, apply_recommended_band_thresholds, band_profile,
+        WaveformPatternMode, band_profile,
     },
 };
 
@@ -42,6 +46,8 @@ pub struct DgLinkGuiApp {
     prev_app_bound: bool,
     last_title_language: UiLanguage,
     last_persisted_settings: PersistedSettings,
+    selected_factory_scene: FactorySceneId,
+    scene_name_drafts: [String; USER_SCENE_SLOT_COUNT],
     show_log_panel: bool,
     log_auto_scroll: bool,
     selected_log_ids: BTreeSet<u64>,
@@ -119,6 +125,14 @@ impl DgLinkGuiApp {
         }
         let initial_language = state.language;
         let last_persisted_settings = PersistedSettings::from_state(&state);
+        let scene_name_drafts = std::array::from_fn(|index| {
+            state
+                .saved_scenes
+                .get(index)
+                .and_then(|slot| slot.as_ref())
+                .map(|scene| scene.name.clone())
+                .unwrap_or_default()
+        });
 
         let mut app = Self {
             state,
@@ -132,6 +146,8 @@ impl DgLinkGuiApp {
             prev_app_bound: false,
             last_title_language: initial_language,
             last_persisted_settings,
+            selected_factory_scene: FactorySceneId::BalancedMotion,
+            scene_name_drafts,
             show_log_panel: false,
             log_auto_scroll: true,
             selected_log_ids: BTreeSet::new(),
@@ -147,6 +163,72 @@ impl DgLinkGuiApp {
 
     fn tr(&self, en: &'static str, zh_cn: &'static str) -> &'static str {
         tr(self.state.language, en, zh_cn)
+    }
+
+    fn default_scene_slot_name(&self, slot_index: usize) -> String {
+        format!(
+            "{} {}",
+            self.tr("Scene", "场景"),
+            slot_index.saturating_add(1)
+        )
+    }
+
+    fn save_scene_to_slot(&mut self, slot_index: usize) {
+        if slot_index >= USER_SCENE_SLOT_COUNT {
+            return;
+        }
+
+        let draft_name = self.scene_name_drafts[slot_index].trim();
+        let name = if draft_name.is_empty() {
+            self.default_scene_slot_name(slot_index)
+        } else {
+            draft_name.to_owned()
+        };
+
+        self.scene_name_drafts[slot_index] = name.clone();
+        self.state.saved_scenes[slot_index] = Some(SavedScene {
+            name: name.clone(),
+            config: self.state.capture_scene_config(),
+        });
+        self.state.clear_error();
+        tracing::info!(
+            "saved current setup to scene slot {} ({name})",
+            slot_index + 1
+        );
+    }
+
+    fn load_scene_from_slot(&mut self, slot_index: usize) {
+        let Some(saved) = self
+            .state
+            .saved_scenes
+            .get(slot_index)
+            .and_then(|slot| slot.clone())
+        else {
+            return;
+        };
+
+        self.state.apply_scene_config(&saved.config);
+        self.scene_name_drafts[slot_index] = saved.name.clone();
+        self.state.clear_error();
+        tracing::info!("loaded scene slot {} ({})", slot_index + 1, saved.name);
+    }
+
+    fn clear_scene_slot(&mut self, slot_index: usize) {
+        if slot_index >= USER_SCENE_SLOT_COUNT {
+            return;
+        }
+
+        self.state.saved_scenes[slot_index] = None;
+        self.scene_name_drafts[slot_index].clear();
+        self.state.clear_error();
+        tracing::info!("cleared scene slot {}", slot_index + 1);
+    }
+
+    fn apply_factory_scene(&mut self, id: FactorySceneId) {
+        let preset = factory_scene_preset(id);
+        self.state.apply_factory_scene_config(&preset.config);
+        self.state.clear_error();
+        tracing::info!("applied factory preset `{}`", preset.name_en);
     }
 
     fn set_log_level(&mut self, level: GuiLogLevel) {
@@ -984,6 +1066,123 @@ impl DgLinkGuiApp {
         });
     }
 
+    fn draw_scene_panel(&mut self, ui: &mut egui::Ui) {
+        let language = self.state.language;
+        let title = self.tr("Scenes & Presets", "场景与预设");
+        let factory_title = self.tr("Factory preset", "内置预设");
+        let factory_apply = self.tr("Apply preset", "应用预设");
+        let saved_title = self.tr("Saved scenes", "已保存场景");
+        let save_label = self.tr("Save", "保存");
+        let load_label = self.tr("Load", "载入");
+        let clear_label = self.tr("Clear", "清空");
+        let empty_slot_label = self.tr("Empty slot", "空槽位");
+        let preset_note = self.tr(
+            "Presets are starting points. They change style settings but keep your current A/B strength ranges.",
+            "预设只是起点。它们会改变风格参数，但会保留你当前的 A/B 强度范围。",
+        );
+        let drive_mode_label = self.tr("Drive", "驱动");
+        let pulse_mode_label = self.tr("Pulse", "波形");
+        let smoothing_label = self.tr("Smooth", "平滑");
+
+        ui.group(|ui| {
+            ui.label(title);
+            ui.small(preset_note);
+            ui.separator();
+
+            let preset = factory_scene_preset(self.selected_factory_scene);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(factory_title);
+                egui::ComboBox::from_id_salt("factory_scene_preset")
+                    .selected_text(tr(language, preset.name_en, preset.name_zh))
+                    .show_ui(ui, |ui| {
+                        for preset in FACTORY_SCENE_PRESETS {
+                            ui.selectable_value(
+                                &mut self.selected_factory_scene,
+                                preset.id,
+                                tr(language, preset.name_en, preset.name_zh),
+                            );
+                        }
+                    });
+                if ui.button(factory_apply).clicked() {
+                    self.apply_factory_scene(self.selected_factory_scene);
+                }
+            });
+            let preset = factory_scene_preset(self.selected_factory_scene);
+            ui.small(self.tr(preset.summary_en, preset.summary_zh));
+
+            ui.separator();
+            ui.label(saved_title);
+            for slot_index in 0..USER_SCENE_SLOT_COUNT {
+                let saved_scene = self
+                    .state
+                    .saved_scenes
+                    .get(slot_index)
+                    .and_then(|slot| slot.clone());
+                let has_scene = saved_scene.is_some();
+                let fallback_name = self.default_scene_slot_name(slot_index);
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!("{} {}", self.tr("Slot", "槽位"), slot_index + 1));
+                    ui.add_sized(
+                        [180.0, 0.0],
+                        egui::TextEdit::singleline(&mut self.scene_name_drafts[slot_index])
+                            .hint_text(fallback_name),
+                    );
+                    if ui.button(save_label).clicked() {
+                        self.save_scene_to_slot(slot_index);
+                    }
+                    if ui
+                        .add_enabled(has_scene, egui::Button::new(load_label))
+                        .clicked()
+                    {
+                        self.load_scene_from_slot(slot_index);
+                    }
+                    if ui
+                        .add_enabled(has_scene, egui::Button::new(clear_label))
+                        .clicked()
+                    {
+                        self.clear_scene_slot(slot_index);
+                    }
+                });
+
+                if let Some(scene) = saved_scene.as_ref() {
+                    let config = scene.config;
+                    let drive_mode = match config.band_drive_mode {
+                        BandDriveMode::Energy => self.tr("Energy", "能量"),
+                        BandDriveMode::Onset => self.tr("Onset", "瞬态"),
+                    };
+                    let pulse_mode = match config.auto_pulse_mode {
+                        AutoPulseMode::ByStrength => self.tr("By strength", "按强度映射"),
+                        AutoPulseMode::AlwaysMax => self.tr("Always max", "始终最高"),
+                    };
+                    ui.small(format!(
+                        "{}: {} | {}: {} | A {}-{} / B {}-{} | {}: {}",
+                        drive_mode_label,
+                        drive_mode,
+                        pulse_mode_label,
+                        pulse_mode,
+                        config.strength_range_a.min,
+                        config.strength_range_a.max,
+                        config.strength_range_b.min,
+                        config.strength_range_b.max,
+                        smoothing_label,
+                        if config.smooth_strength_enabled {
+                            format!("{:.2}", config.smooth_strength_factor)
+                        } else {
+                            self.tr("off", "关闭").to_owned()
+                        }
+                    ));
+                } else {
+                    ui.small(empty_slot_label);
+                }
+
+                if slot_index + 1 < USER_SCENE_SLOT_COUNT {
+                    ui.separator();
+                }
+            }
+        });
+    }
+
     fn draw_speaker_source_panel(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.label(self.tr("Audio Source (Speaker Loopback)", "音频源（扬声器回环）"));
@@ -1256,11 +1455,6 @@ impl DgLinkGuiApp {
             "These 4 bands are tuned for musical roles, not evenly spaced engineering ranges.",
             "这 4 个 band 按音乐角色调过，不是平均切开的工程频段。",
         );
-        let apply_thresholds_label = self.tr("Apply recommended thresholds", "应用推荐触发值");
-        let threshold_preset_note = self.tr(
-            "Kick/Sub 0.38, Bass/Groove 0.46, Vocal/Lead 0.32, Hats/Air 0.54",
-            "底鼓/下潜 0.38，贝斯/律动 0.46，人声/主旋律 0.32，镲片/空气感 0.54",
-        );
         ui.group(|ui| {
             ui.label(self.tr("Band Routing (4 roles)", "频段路由（4 个角色）"));
             egui::ComboBox::from_id_salt("band_drive_mode")
@@ -1292,12 +1486,6 @@ impl DgLinkGuiApp {
                 ui.small(onset_note);
             }
             ui.small(band_role_note);
-            ui.horizontal_wrapped(|ui| {
-                if ui.button(apply_thresholds_label).clicked() {
-                    apply_recommended_band_thresholds(&mut self.state.band_routing);
-                }
-                ui.small(threshold_preset_note);
-            });
             ui.separator();
             for index in 0..BAND_COUNT {
                 let band_value = self.state.band_values[index];
@@ -1842,6 +2030,8 @@ impl eframe::App for DgLinkGuiApp {
                         self.draw_strength_range(&mut columns[0]);
                         self.draw_waveform_panel(&mut columns[1]);
                     });
+                    ui.separator();
+                    self.draw_scene_panel(ui);
                     ui.separator();
                     egui::CollapsingHeader::new(
                         self.tr("Output Strength Trend (A/B)", "输出强度曲线（A/B）"),

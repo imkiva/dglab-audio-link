@@ -93,12 +93,6 @@ pub const fn default_band_routing() -> [BandRouting; BAND_COUNT] {
     ]
 }
 
-pub fn apply_recommended_band_thresholds(routing: &mut [BandRouting; BAND_COUNT]) {
-    for (index, route) in routing.iter_mut().enumerate() {
-        route.threshold = band_profile(index).recommended_threshold;
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AutoPulseMode {
     #[default]

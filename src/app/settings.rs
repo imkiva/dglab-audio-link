@@ -3,7 +3,11 @@ use std::{env, fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    app::{i18n::UiLanguage, state::AppState},
+    app::{
+        i18n::UiLanguage,
+        scenes::{SavedScene, empty_scene_slots, normalize_saved_scenes},
+        state::AppState,
+    },
     types::{
         AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, StrengthRange, WaveformPattern,
         WaveformPatternMode, default_band_routing,
@@ -11,7 +15,7 @@ use crate::{
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const SETTINGS_SCHEMA_VERSION: u8 = 7;
+const SETTINGS_SCHEMA_VERSION: u8 = 8;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -28,6 +32,7 @@ pub struct PersistedSettings {
     pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
+    pub saved_scenes: Vec<Option<SavedScene>>,
     pub selected_output_device: Option<String>,
 }
 
@@ -46,6 +51,7 @@ impl Default for PersistedSettings {
             waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
+            saved_scenes: empty_scene_slots(),
             selected_output_device: None,
         }
     }
@@ -66,6 +72,7 @@ impl PersistedSettings {
             waveform_contrast: state.waveform_contrast,
             smooth_strength_enabled: state.smooth_strength_enabled,
             smooth_strength_factor: state.smooth_strength_factor,
+            saved_scenes: state.saved_scenes.clone(),
             selected_output_device: state.selected_output_device.clone(),
         }
         .sanitized()
@@ -84,6 +91,7 @@ impl PersistedSettings {
         state.waveform_contrast = normalized.waveform_contrast;
         state.smooth_strength_enabled = normalized.smooth_strength_enabled;
         state.smooth_strength_factor = normalized.smooth_strength_factor;
+        state.saved_scenes = normalized.saved_scenes;
         state.selected_output_device = normalized.selected_output_device;
     }
 
@@ -112,12 +120,16 @@ impl PersistedSettings {
             self.waveform_pattern_mode = WaveformPatternMode::AutoMorph;
             self.waveform_pattern = WaveformPattern::Smooth;
         }
+        if self.version < 8 {
+            self.saved_scenes = empty_scene_slots();
+        }
         self.version = SETTINGS_SCHEMA_VERSION;
 
         self.strength_range_a = self.strength_range_a.normalized();
         self.strength_range_b = self.strength_range_b.normalized();
         self.waveform_contrast = self.waveform_contrast.clamp(1.0, 4.0);
         self.smooth_strength_factor = self.smooth_strength_factor.clamp(0.0, 1.0);
+        self.saved_scenes = normalize_saved_scenes(self.saved_scenes);
 
         for route in &mut self.band_routing {
             route.threshold = route.threshold.clamp(0.0, 1.0);

@@ -5,7 +5,7 @@
 - [x] Beat / onset detection mode
 - [x] Waveform library with pattern morphing
 - [x] Musical band roles (`Kick/Sub`, `Bass/Groove`, `Vocal/Lead`, `Hats/Air`)
-- [ ] Scene / preset system
+- [x] Scene / preset system
 
 ## Later
 - [ ] Stereo-aware routing (`L/R`, `mid/side`)

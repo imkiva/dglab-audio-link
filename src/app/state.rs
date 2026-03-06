@@ -3,7 +3,10 @@ use dglab_socket_protocol::{
     protocol::{StrengthControlMode, StrengthReport},
 };
 
-use crate::app::i18n::UiLanguage;
+use crate::app::{
+    i18n::UiLanguage,
+    scenes::{SavedScene, SceneConfig, empty_scene_slots},
+};
 use crate::types::{
     AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange,
     WaveformPattern, WaveformPatternMode, default_band_routing,
@@ -37,6 +40,7 @@ pub struct AppState {
     pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
+    pub saved_scenes: Vec<Option<SavedScene>>,
     pub last_app_message: Option<String>,
     pub last_server_info: Option<String>,
     pub audio_capture_running: bool,
@@ -77,6 +81,7 @@ impl Default for AppState {
             waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
+            saved_scenes: empty_scene_slots(),
             last_app_message: None,
             last_server_info: None,
             audio_capture_running: false,
@@ -90,6 +95,44 @@ impl Default for AppState {
 }
 
 impl AppState {
+    pub fn capture_scene_config(&self) -> SceneConfig {
+        SceneConfig {
+            band_routing: self.band_routing,
+            strength_range_a: self.strength_range_a,
+            strength_range_b: self.strength_range_b,
+            auto_pulse_mode: self.auto_pulse_mode,
+            band_drive_mode: self.band_drive_mode,
+            waveform_pattern_mode: self.waveform_pattern_mode,
+            waveform_pattern: self.waveform_pattern,
+            waveform_contrast: self.waveform_contrast,
+            smooth_strength_enabled: self.smooth_strength_enabled,
+            smooth_strength_factor: self.smooth_strength_factor,
+        }
+        .sanitized()
+    }
+
+    pub fn apply_scene_config(&mut self, config: &SceneConfig) {
+        let config = config.sanitized();
+        self.band_routing = config.band_routing;
+        self.strength_range_a = config.strength_range_a;
+        self.strength_range_b = config.strength_range_b;
+        self.auto_pulse_mode = config.auto_pulse_mode;
+        self.band_drive_mode = config.band_drive_mode;
+        self.waveform_pattern_mode = config.waveform_pattern_mode;
+        self.waveform_pattern = config.waveform_pattern;
+        self.waveform_contrast = config.waveform_contrast;
+        self.smooth_strength_enabled = config.smooth_strength_enabled;
+        self.smooth_strength_factor = config.smooth_strength_factor;
+    }
+
+    pub fn apply_factory_scene_config(&mut self, config: &SceneConfig) {
+        let preserved_a = self.strength_range_a;
+        let preserved_b = self.strength_range_b;
+        self.apply_scene_config(config);
+        self.strength_range_a = preserved_a;
+        self.strength_range_b = preserved_b;
+    }
+
     pub fn clear_error(&mut self) {
         self.last_error = None;
     }
