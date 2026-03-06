@@ -4,6 +4,12 @@ use eframe::egui;
 use egui_plot::{Legend, Line, Plot, PlotPoints};
 use qrcodegen::{QrCode, QrCodeEcc};
 use tokio::runtime::Runtime;
+use dglab_socket_protocol::{
+    pairing,
+    protocol::{
+        StrengthControlMode, build_clear_message, build_pulse_message, build_strength_message,
+    },
+};
 
 use crate::{
     app::{
@@ -14,12 +20,6 @@ use crate::{
     audio::{
         analyzer::BAND_RANGES_HZ,
         capture::{default_output_device_name, list_output_device_names},
-    },
-    dglab::{
-        pairing,
-        protocol::{
-            StrengthControlMode, build_clear_message, build_pulse_message, build_strength_message,
-        },
     },
     domain::{
         BAND_COUNT,

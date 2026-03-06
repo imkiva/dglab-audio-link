@@ -1,6 +1,9 @@
+use dglab_socket_protocol::{
+    pairing,
+    protocol::{StrengthControlMode, StrengthReport},
+};
+
 use crate::app::i18n::UiLanguage;
-use crate::dglab::protocol::StrengthReport;
-use crate::dglab::{pairing, protocol::StrengthControlMode};
 use crate::domain::{
     BAND_COUNT,
     types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},

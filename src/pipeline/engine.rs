@@ -4,6 +4,14 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use dglab_socket_protocol::{
+    pairing,
+    protocol::{
+        MAX_JSON_CHARS, SocketPacket, StrengthControlMode, StrengthReport, build_clear_message,
+        build_pulse_message_from_items, build_strength_message, parse_strength_report,
+    },
+    server::{DglabWsServer, DglabWsServerConfig, DglabWsServerControl, DglabWsServerEvent, DglabWsServerStatus},
+};
 use tokio::{
     runtime::Runtime,
     sync::{mpsc, watch},
@@ -12,14 +20,6 @@ use tokio::{
 
 use crate::{
     audio::capture::{LoopbackCapture, LoopbackCaptureConfig},
-    dglab::{
-        pairing,
-        protocol::{
-            MAX_JSON_CHARS, SocketPacket, StrengthControlMode, StrengthReport, build_clear_message,
-            build_pulse_message_from_items, build_strength_message, parse_strength_report,
-        },
-        server::{DglabWsServer, DglabWsServerConfig, DglabWsServerControl, DglabWsServerEvent},
-    },
     domain::{
         BAND_COUNT,
         types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},
@@ -94,7 +94,7 @@ pub struct PipelineEngine {
     runtime: Arc<Runtime>,
     worker: Option<JoinHandle<()>>,
     server_control: Option<DglabWsServerControl>,
-    server_status_rx: Option<watch::Receiver<crate::dglab::server::DglabWsServerStatus>>,
+    server_status_rx: Option<watch::Receiver<DglabWsServerStatus>>,
     snapshot: Arc<Mutex<EngineSnapshot>>,
     settings: Arc<Mutex<PipelineSettings>>,
 }

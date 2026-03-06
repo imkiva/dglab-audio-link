@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::domain::types::DglabChannel;
+use crate::DglabChannel;
 
 pub const MAX_JSON_CHARS: usize = 1_950;
 pub const MESSAGE_TARGET_ID: &str = "targetId";
@@ -81,8 +81,7 @@ pub fn build_pulse_message_from_items(
     let mut items = Vec::with_capacity(raw_items.len());
     for item in raw_items {
         let normalized = item.trim().to_ascii_uppercase();
-        if normalized.len() != PULSE_HEX_CHARS
-            || !normalized.chars().all(|c| c.is_ascii_hexdigit())
+        if normalized.len() != PULSE_HEX_CHARS || !normalized.chars().all(|c| c.is_ascii_hexdigit())
         {
             return Err(format!(
                 "invalid pulse item `{item}`. each item must be 16 HEX chars, e.g. 0A0A0A0A00000000"
@@ -274,7 +273,7 @@ mod tests {
         StrengthControlMode, build_clear_message, build_pulse_message, build_strength_message,
         parse_strength_report,
     };
-    use crate::domain::types::DglabChannel;
+    use crate::DglabChannel;
 
     #[test]
     fn builds_strength_message() {

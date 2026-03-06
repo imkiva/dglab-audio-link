@@ -1,6 +1,5 @@
 mod app;
 mod audio;
-mod dglab;
 mod domain;
 mod pipeline;
 mod signal;

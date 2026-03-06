@@ -20,7 +20,7 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-use crate::dglab::protocol::{
+use crate::protocol::{
     CODE_BIND_TARGET_NOT_FOUND, CODE_INVALID_JSON, CODE_MESSAGE_TOO_LONG, CODE_NOT_BOUND, CODE_OK,
     CODE_QR_CLIENT_ID_INVALID, MAX_JSON_CHARS, MESSAGE_DGLAB, PacketType, SocketPacket,
 };

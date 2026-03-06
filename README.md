@@ -18,6 +18,12 @@ Rust binary project (nightly toolchain) for:
 ## Project layout
 
 ```text
+crates/
+  dglab-socket-protocol/
+    src/
+      pairing.rs    # QR payload format and session URL helpers
+      protocol.rs   # websocket payload and parser helpers
+      server.rs     # reusable DG-LAB websocket server
 src/
   app/
     gui.rs          # GUI app and widgets
@@ -25,10 +31,6 @@ src/
   audio/
     capture.rs      # Windows loopback capture skeleton
     analyzer.rs     # 4-band analyzer skeleton
-  dglab/
-    pairing.rs      # QR payload format and session URL helpers
-    protocol.rs     # websocket payload skeleton
-    server.rs       # websocket server skeleton
   domain/
     types.rs        # shared domain types and constraints
   signal/
