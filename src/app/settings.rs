@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     app::{i18n::UiLanguage, state::AppState},
-    types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange},
+    types::{
+        AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, StrengthRange, WaveformPattern,
+        WaveformPatternMode, default_band_routing,
+    },
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
-const SETTINGS_SCHEMA_VERSION: u8 = 6;
+const SETTINGS_SCHEMA_VERSION: u8 = 7;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -20,6 +23,8 @@ pub struct PersistedSettings {
     pub strength_range_b: StrengthRange,
     pub auto_pulse_mode: AutoPulseMode,
     pub band_drive_mode: BandDriveMode,
+    pub waveform_pattern_mode: WaveformPatternMode,
+    pub waveform_pattern: WaveformPattern,
     pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
@@ -31,16 +36,13 @@ impl Default for PersistedSettings {
         Self {
             version: 1,
             language: UiLanguage::En,
-            band_routing: [
-                BandRouting::new(true, 0.25, DglabChannel::A),
-                BandRouting::new(true, 0.35, DglabChannel::A),
-                BandRouting::new(true, 0.45, DglabChannel::B),
-                BandRouting::new(true, 0.55, DglabChannel::B),
-            ],
+            band_routing: default_band_routing(),
             strength_range_a: StrengthRange::new(10, 160),
             strength_range_b: StrengthRange::new(10, 160),
             auto_pulse_mode: AutoPulseMode::ByStrength,
             band_drive_mode: BandDriveMode::Energy,
+            waveform_pattern_mode: WaveformPatternMode::AutoMorph,
+            waveform_pattern: WaveformPattern::Smooth,
             waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,
@@ -59,6 +61,8 @@ impl PersistedSettings {
             strength_range_b: state.strength_range_b,
             auto_pulse_mode: state.auto_pulse_mode,
             band_drive_mode: state.band_drive_mode,
+            waveform_pattern_mode: state.waveform_pattern_mode,
+            waveform_pattern: state.waveform_pattern,
             waveform_contrast: state.waveform_contrast,
             smooth_strength_enabled: state.smooth_strength_enabled,
             smooth_strength_factor: state.smooth_strength_factor,
@@ -75,6 +79,8 @@ impl PersistedSettings {
         state.strength_range_b = normalized.strength_range_b;
         state.auto_pulse_mode = normalized.auto_pulse_mode;
         state.band_drive_mode = normalized.band_drive_mode;
+        state.waveform_pattern_mode = normalized.waveform_pattern_mode;
+        state.waveform_pattern = normalized.waveform_pattern;
         state.waveform_contrast = normalized.waveform_contrast;
         state.smooth_strength_enabled = normalized.smooth_strength_enabled;
         state.smooth_strength_factor = normalized.smooth_strength_factor;
@@ -101,6 +107,10 @@ impl PersistedSettings {
         }
         if self.version < 6 {
             self.band_drive_mode = BandDriveMode::Energy;
+        }
+        if self.version < 7 {
+            self.waveform_pattern_mode = WaveformPatternMode::AutoMorph;
+            self.waveform_pattern = WaveformPattern::Smooth;
         }
         self.version = SETTINGS_SCHEMA_VERSION;
 

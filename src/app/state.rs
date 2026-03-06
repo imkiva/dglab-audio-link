@@ -4,7 +4,10 @@ use dglab_socket_protocol::{
 };
 
 use crate::app::i18n::UiLanguage;
-use crate::types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange};
+use crate::types::{
+    AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange,
+    WaveformPattern, WaveformPatternMode, default_band_routing,
+};
 
 #[derive(Debug, Clone)]
 pub struct AppState {
@@ -29,6 +32,8 @@ pub struct AppState {
     pub auto_limit_with_app_soft_limit: bool,
     pub auto_pulse_mode: AutoPulseMode,
     pub band_drive_mode: BandDriveMode,
+    pub waveform_pattern_mode: WaveformPatternMode,
+    pub waveform_pattern: WaveformPattern,
     pub waveform_contrast: f32,
     pub smooth_strength_enabled: bool,
     pub smooth_strength_factor: f32,
@@ -47,12 +52,7 @@ impl Default for AppState {
         Self {
             language: UiLanguage::default(),
             websocket_url: pairing::default_ws_url(),
-            band_routing: [
-                BandRouting::new(true, 0.25, DglabChannel::A),
-                BandRouting::new(true, 0.35, DglabChannel::A),
-                BandRouting::new(true, 0.45, DglabChannel::B),
-                BandRouting::new(true, 0.55, DglabChannel::B),
-            ],
+            band_routing: default_band_routing(),
             band_values: [0.0; BAND_COUNT],
             strength_range_a: StrengthRange::new(10, 160),
             strength_range_b: StrengthRange::new(10, 160),
@@ -72,6 +72,8 @@ impl Default for AppState {
             auto_limit_with_app_soft_limit: true,
             auto_pulse_mode: AutoPulseMode::ByStrength,
             band_drive_mode: BandDriveMode::Energy,
+            waveform_pattern_mode: WaveformPatternMode::AutoMorph,
+            waveform_pattern: WaveformPattern::Smooth,
             waveform_contrast: 1.8,
             smooth_strength_enabled: true,
             smooth_strength_factor: 0.70,

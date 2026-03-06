@@ -1,11 +1,9 @@
 use anyhow::{Result, anyhow};
-use cpal::{DeviceType, FromSample, InterfaceType};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{DeviceType, FromSample, InterfaceType};
 use tokio::sync::mpsc;
 
-use crate::{
-    audio::analyzer::{BandAnalysisFrame, BandAnalyzer},
-};
+use crate::audio::analyzer::{BandAnalysisFrame, BandAnalyzer};
 
 #[derive(Debug, Clone)]
 pub struct LoopbackCaptureConfig {

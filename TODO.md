@@ -3,7 +3,8 @@
 ## Next
 - [x] Per-band attack / hold / release envelope
 - [x] Beat / onset detection mode
-- [ ] Waveform library with pattern morphing
+- [x] Waveform library with pattern morphing
+- [x] Musical band roles (`Kick/Sub`, `Bass/Groove`, `Vocal/Lead`, `Hats/Air`)
 - [ ] Scene / preset system
 
 ## Later

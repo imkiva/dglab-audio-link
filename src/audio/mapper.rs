@@ -34,9 +34,7 @@ pub fn compute_band_outputs(
     outputs
 }
 
-pub fn aggregate_channel_strengths(
-    outputs: [Option<(DglabChannel, u16)>; BAND_COUNT],
-) -> [u16; 2] {
+pub fn aggregate_channel_strengths(outputs: [Option<(DglabChannel, u16)>; BAND_COUNT]) -> [u16; 2] {
     let mut result = [0_u16; 2];
     for output in outputs.into_iter().flatten() {
         match output.0 {

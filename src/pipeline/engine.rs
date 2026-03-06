@@ -10,7 +10,10 @@ use dglab_socket_protocol::{
         MAX_JSON_CHARS, SocketPacket, StrengthControlMode, StrengthReport, build_clear_message,
         build_pulse_message_from_items, build_strength_message, parse_strength_report,
     },
-    server::{DglabWsServer, DglabWsServerConfig, DglabWsServerControl, DglabWsServerEvent, DglabWsServerStatus},
+    server::{
+        DglabWsServer, DglabWsServerConfig, DglabWsServerControl, DglabWsServerEvent,
+        DglabWsServerStatus,
+    },
 };
 use tokio::{
     runtime::Runtime,
@@ -24,7 +27,10 @@ use crate::{
         capture::{LoopbackCapture, LoopbackCaptureConfig},
         mapper::{aggregate_channel_strengths, compute_band_outputs},
     },
-    types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange},
+    types::{
+        AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, StrengthRange,
+        WaveformPattern, WaveformPatternMode,
+    },
 };
 
 const DEFAULT_SEND_INTERVAL_MS: u64 = 100;
@@ -37,6 +43,8 @@ pub struct PipelineSettings {
     pub pulse_items_per_message: usize,
     pub auto_pulse_mode: AutoPulseMode,
     pub band_drive_mode: BandDriveMode,
+    pub waveform_pattern_mode: WaveformPatternMode,
+    pub waveform_pattern: WaveformPattern,
     pub waveform_contrast: f32,
     pub respect_app_soft_limit: bool,
     pub smooth_strength_enabled: bool,
@@ -52,6 +60,8 @@ impl Default for PipelineSettings {
             pulse_items_per_message: 1,
             auto_pulse_mode: AutoPulseMode::ByStrength,
             band_drive_mode: BandDriveMode::Energy,
+            waveform_pattern_mode: WaveformPatternMode::AutoMorph,
+            waveform_pattern: WaveformPattern::Smooth,
             waveform_contrast: 1.8,
             respect_app_soft_limit: true,
             smooth_strength_enabled: true,
@@ -183,6 +193,7 @@ impl PipelineEngine {
             let mut pending_peak_bands = [0.0_f32; BAND_COUNT];
             let mut band_envelopes = [BandEnvelopeState::default(); BAND_COUNT];
             let mut last_band_update_at: Option<Instant> = None;
+            let mut latest_analysis = BandAnalysisFrame::default();
             let mut latest_soft_limits = [200_u16; 2];
             let mut active_band_drive_mode = settings
                 .lock()
@@ -311,6 +322,7 @@ impl PipelineEngine {
                     }
                     maybe_bands = band_rx.recv() => {
                         if let Some(analysis) = maybe_bands {
+                            latest_analysis = analysis;
                             let now = Instant::now();
                             let dt_ms = last_band_update_at
                                 .map(|last| now.duration_since(last).as_secs_f32() * 1000.0)
@@ -451,6 +463,12 @@ impl PipelineEngine {
                                     mapping_max,
                                     local_settings.pulse_items_per_message.max(1).min(8),
                                     local_settings.auto_pulse_mode,
+                                    local_settings.waveform_pattern_mode,
+                                    resolve_waveform_pattern(
+                                        local_settings.waveform_pattern_mode,
+                                        local_settings.waveform_pattern,
+                                        latest_analysis,
+                                    ),
                                     local_settings.waveform_contrast,
                                 );
                                 match build_pulse_message_from_items(channel, &pulse_items) {
@@ -662,37 +680,135 @@ fn apply_band_envelope_step(
     state.value.clamp(0.0, 1.0)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct WaveformPatternSpec {
+    freq: [u8; 4],
+    amp: [f32; 4],
+}
+
+impl WaveformPatternSpec {
+    const fn for_pattern(pattern: WaveformPattern) -> Self {
+        match pattern {
+            WaveformPattern::Smooth => Self {
+                freq: [10, 10, 10, 10],
+                amp: [1.0, 1.0, 1.0, 1.0],
+            },
+            WaveformPattern::Punch => Self {
+                freq: [10, 12, 14, 18],
+                amp: [0.25, 1.0, 0.72, 0.42],
+            },
+            WaveformPattern::Tide => Self {
+                freq: [10, 12, 15, 18],
+                amp: [0.22, 0.48, 0.78, 1.0],
+            },
+            WaveformPattern::Ripple => Self {
+                freq: [10, 12, 16, 20],
+                amp: [0.42, 0.72, 1.0, 0.68],
+            },
+            WaveformPattern::Shimmer => Self {
+                freq: [14, 18, 22, 26],
+                amp: [0.52, 0.78, 0.96, 0.62],
+            },
+        }
+    }
+}
+
+fn dominant_band(values: [f32; BAND_COUNT]) -> usize {
+    let mut best_idx = 0;
+    let mut best_value = values[0];
+    for (idx, value) in values.into_iter().enumerate().skip(1) {
+        if value > best_value {
+            best_idx = idx;
+            best_value = value;
+        }
+    }
+    best_idx
+}
+
+fn resolve_waveform_pattern(
+    pattern_mode: WaveformPatternMode,
+    fixed_pattern: WaveformPattern,
+    analysis: BandAnalysisFrame,
+) -> WaveformPattern {
+    match pattern_mode {
+        WaveformPatternMode::Fixed => fixed_pattern,
+        WaveformPatternMode::AutoMorph => {
+            let peak_onset = analysis.onset.into_iter().fold(0.0_f32, f32::max);
+            if peak_onset >= 0.68 {
+                return WaveformPattern::Punch;
+            }
+
+            match dominant_band(analysis.energy) {
+                0 => WaveformPattern::Smooth,
+                1 => WaveformPattern::Tide,
+                2 => WaveformPattern::Ripple,
+                _ => WaveformPattern::Shimmer,
+            }
+        }
+    }
+}
+
 fn build_pulse_items_for_strength(
     strength: u16,
     mapping_max_strength: u16,
     count: usize,
     mode: AutoPulseMode,
+    pattern_mode: WaveformPatternMode,
+    pattern: WaveformPattern,
     waveform_contrast: f32,
 ) -> Vec<String> {
-    const CONTINUOUS_FREQ_HEX: &str = "0A0A0A0A";
     const MAX_WAVE_STRENGTH: u8 = 100;
-
-    let wave_strength_hex = |wave_strength: u8| format!("{wave_strength:02X}").repeat(4);
 
     let item = match mode {
         AutoPulseMode::ByStrength => {
             let mapping_max_strength = mapping_max_strength.clamp(1, 200);
             let contrast = waveform_contrast.clamp(1.0, 4.0);
-            let normalized =
-                (strength.min(mapping_max_strength) as f32 / mapping_max_strength as f32)
-                    .clamp(0.0, 1.0);
+            let normalized = (strength.min(mapping_max_strength) as f32
+                / mapping_max_strength as f32)
+                .clamp(0.0, 1.0);
             let boosted = ((normalized - 0.5) * contrast + 0.5).clamp(0.0, 1.0);
             let wave_strength = if strength == 0 {
                 0
             } else {
                 ((boosted * MAX_WAVE_STRENGTH as f32).round() as u8).clamp(1, MAX_WAVE_STRENGTH)
             };
-            format!("{CONTINUOUS_FREQ_HEX}{}", wave_strength_hex(wave_strength))
+            let source = WaveformPatternSpec::for_pattern(WaveformPattern::Smooth);
+            let target = WaveformPatternSpec::for_pattern(pattern);
+            let morph = match pattern_mode {
+                WaveformPatternMode::Fixed => 1.0,
+                WaveformPatternMode::AutoMorph => normalized.clamp(0.2, 1.0),
+            };
+
+            let mut bytes = String::with_capacity(16);
+            for idx in 0..4 {
+                let freq = source.freq[idx] as f32
+                    + (target.freq[idx] as f32 - source.freq[idx] as f32) * morph;
+                bytes.push_str(&format!("{:02X}", freq.round().clamp(10.0, 240.0) as u8));
+            }
+            for idx in 0..4 {
+                let amp_factor = source.amp[idx] + (target.amp[idx] - source.amp[idx]) * morph;
+                let amp = if wave_strength == 0 {
+                    0
+                } else {
+                    ((wave_strength as f32 * amp_factor).round() as u8).clamp(1, MAX_WAVE_STRENGTH)
+                };
+                bytes.push_str(&format!("{amp:02X}"));
+            }
+            bytes
         }
-        AutoPulseMode::AlwaysMax => format!(
-            "{CONTINUOUS_FREQ_HEX}{}",
-            wave_strength_hex(MAX_WAVE_STRENGTH)
-        ),
+        AutoPulseMode::AlwaysMax => {
+            let pattern = WaveformPatternSpec::for_pattern(pattern);
+            let mut bytes = String::with_capacity(16);
+            for freq in pattern.freq {
+                bytes.push_str(&format!("{freq:02X}"));
+            }
+            for amp_factor in pattern.amp {
+                let amp = ((MAX_WAVE_STRENGTH as f32 * amp_factor).round() as u8)
+                    .clamp(1, MAX_WAVE_STRENGTH);
+                bytes.push_str(&format!("{amp:02X}"));
+            }
+            bytes
+        }
     };
     vec![item; count.max(1)]
 }
@@ -719,13 +835,24 @@ fn smooth_strength_step(current: u16, target: u16, smoothness: f32) -> u16 {
 mod tests {
     use super::{
         BandEnvelopeState, apply_band_envelope_step, build_pulse_items_for_strength,
-        merge_bands_with_pending_peaks, smooth_strength_step,
+        merge_bands_with_pending_peaks, resolve_waveform_pattern, smooth_strength_step,
     };
-    use crate::types::{AutoPulseMode, BandRouting, DglabChannel};
+    use crate::{
+        audio::analyzer::BandAnalysisFrame,
+        types::{AutoPulseMode, BandRouting, DglabChannel, WaveformPattern, WaveformPatternMode},
+    };
 
     #[test]
     fn builds_strength_based_pulse_items() {
-        let items = build_pulse_items_for_strength(100, 200, 4, AutoPulseMode::ByStrength, 1.0);
+        let items = build_pulse_items_for_strength(
+            100,
+            200,
+            4,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
         assert_eq!(
             items,
             vec![
@@ -739,7 +866,15 @@ mod tests {
 
     #[test]
     fn builds_always_max_pulse_items() {
-        let items = build_pulse_items_for_strength(1, 200, 3, AutoPulseMode::AlwaysMax, 1.0);
+        let items = build_pulse_items_for_strength(
+            1,
+            200,
+            3,
+            AutoPulseMode::AlwaysMax,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
         assert_eq!(
             items,
             vec![
@@ -752,36 +887,120 @@ mod tests {
 
     #[test]
     fn strength_based_pulse_never_contains_gap_pattern_when_strength_is_positive() {
-        let items = build_pulse_items_for_strength(1, 200, 1, AutoPulseMode::ByStrength, 1.0);
+        let items = build_pulse_items_for_strength(
+            1,
+            200,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
         assert_eq!(items[0], "0A0A0A0A01010101");
     }
 
     #[test]
     fn strength_based_pulse_uses_valid_v3_ranges() {
-        let zero = build_pulse_items_for_strength(0, 200, 1, AutoPulseMode::ByStrength, 1.0);
-        let max = build_pulse_items_for_strength(200, 200, 1, AutoPulseMode::ByStrength, 1.0);
+        let zero = build_pulse_items_for_strength(
+            0,
+            200,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
+        let max = build_pulse_items_for_strength(
+            200,
+            200,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
         assert_eq!(zero[0], "0A0A0A0A00000000");
         assert_eq!(max[0], "0A0A0A0A64646464");
     }
 
     #[test]
     fn strength_based_pulse_reaches_max_at_mapping_cap() {
-        let items = build_pulse_items_for_strength(80, 80, 1, AutoPulseMode::ByStrength, 1.0);
+        let items = build_pulse_items_for_strength(
+            80,
+            80,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
         assert_eq!(items[0], "0A0A0A0A64646464");
     }
 
     #[test]
     fn strength_based_pulse_clamps_to_mapping_cap() {
-        let items = build_pulse_items_for_strength(160, 80, 1, AutoPulseMode::ByStrength, 1.0);
+        let items = build_pulse_items_for_strength(
+            160,
+            80,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
         assert_eq!(items[0], "0A0A0A0A64646464");
     }
 
     #[test]
     fn waveform_contrast_boosts_dynamic_range() {
-        let linear = build_pulse_items_for_strength(120, 200, 1, AutoPulseMode::ByStrength, 1.0);
-        let boosted = build_pulse_items_for_strength(120, 200, 1, AutoPulseMode::ByStrength, 1.8);
+        let linear = build_pulse_items_for_strength(
+            120,
+            200,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.0,
+        );
+        let boosted = build_pulse_items_for_strength(
+            120,
+            200,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Smooth,
+            1.8,
+        );
         assert_eq!(linear[0], "0A0A0A0A3C3C3C3C");
         assert_eq!(boosted[0], "0A0A0A0A44444444");
+    }
+
+    #[test]
+    fn fixed_punch_pattern_uses_non_flat_shape() {
+        let items = build_pulse_items_for_strength(
+            200,
+            200,
+            1,
+            AutoPulseMode::ByStrength,
+            WaveformPatternMode::Fixed,
+            WaveformPattern::Punch,
+            1.0,
+        );
+        assert_eq!(items[0], "0A0C0E121964482A");
+    }
+
+    #[test]
+    fn auto_morph_resolves_punch_for_high_onset() {
+        let analysis = BandAnalysisFrame {
+            energy: [0.2, 0.2, 0.2, 0.2],
+            onset: [0.1, 0.8, 0.2, 0.1],
+        };
+        let pattern = resolve_waveform_pattern(
+            WaveformPatternMode::AutoMorph,
+            WaveformPattern::Smooth,
+            analysis,
+        );
+        assert_eq!(pattern, WaveformPattern::Punch);
     }
 
     #[test]

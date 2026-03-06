@@ -151,11 +151,7 @@ fn parse_log_entry(id: u64, text: String) -> GuiLogEntry {
     let (timestamp, level, remainder) = if let Some(level) = GuiLogLevel::from_level_token(second) {
         (first.to_owned(), level, third)
     } else {
-        (
-            String::new(),
-            GuiLogLevel::from_log_line(trimmed),
-            trimmed,
-        )
+        (String::new(), GuiLogLevel::from_log_line(trimmed), trimmed)
     };
 
     let (target, message) = if let Some((target, message)) = remainder.split_once(": ") {

@@ -4,16 +4,16 @@ use std::{
     time::Instant,
 };
 
-use eframe::egui;
-use egui_plot::{Legend, Line, Plot, PlotPoints};
-use qrcodegen::{QrCode, QrCodeEcc};
-use tokio::runtime::Runtime;
 use dglab_socket_protocol::{
     pairing,
     protocol::{
         StrengthControlMode, build_clear_message, build_pulse_message, build_strength_message,
     },
 };
+use eframe::egui;
+use egui_plot::{Legend, Line, Plot, PlotPoints};
+use qrcodegen::{QrCode, QrCodeEcc};
+use tokio::runtime::Runtime;
 
 use crate::{
     app::{
@@ -22,12 +22,12 @@ use crate::{
         settings::{self, PersistedSettings},
         state::AppState,
     },
-    audio::{
-        analyzer::BAND_RANGES_HZ,
-        capture::{default_output_device_name, list_output_device_names},
-    },
+    audio::capture::{default_output_device_name, list_output_device_names},
     pipeline::engine::{PipelineEngine, PipelineSettings},
-    types::{AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel},
+    types::{
+        AutoPulseMode, BAND_COUNT, BandDriveMode, BandRouting, DglabChannel, WaveformPattern,
+        WaveformPatternMode, apply_recommended_band_thresholds, band_profile,
+    },
 };
 
 pub struct DgLinkGuiApp {
@@ -216,9 +216,11 @@ impl DgLinkGuiApp {
     }
 
     fn retain_visible_log_selection(&mut self, entries: &[GuiLogEntry]) {
-        let visible_ids = entries.iter().map(|entry| entry.id).collect::<BTreeSet<_>>();
-        self.selected_log_ids
-            .retain(|id| visible_ids.contains(id));
+        let visible_ids = entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<BTreeSet<_>>();
+        self.selected_log_ids.retain(|id| visible_ids.contains(id));
         if self
             .log_selection_anchor
             .is_some_and(|id| !visible_ids.contains(&id))
@@ -227,7 +229,12 @@ impl DgLinkGuiApp {
         }
     }
 
-    fn toggle_log_selection(&mut self, entries: &[GuiLogEntry], clicked_id: u64, modifiers: egui::Modifiers) {
+    fn toggle_log_selection(
+        &mut self,
+        entries: &[GuiLogEntry],
+        clicked_id: u64,
+        modifiers: egui::Modifiers,
+    ) {
         let clicked_index = match entries.iter().position(|entry| entry.id == clicked_id) {
             Some(index) => index,
             None => return,
@@ -274,8 +281,10 @@ impl DgLinkGuiApp {
             .save_file()
         {
             if let Err(err) = std::fs::write(&path, text) {
-                self.state
-                    .set_error(format!("failed to write log file `{}`: {err}", path.display()));
+                self.state.set_error(format!(
+                    "failed to write log file `{}`: {err}",
+                    path.display()
+                ));
             } else {
                 self.state.clear_error();
                 self.state
@@ -288,12 +297,8 @@ impl DgLinkGuiApp {
         tracing::error!(
             "test error: socket payload rejected {{code=405, size=2048, sample='[\"0A0A...\"]'}}"
         );
-        tracing::warn!(
-            "test warn: requested speaker `LG ULTRAGEAR` fallback to default endpoint"
-        );
-        tracing::info!(
-            "test info: app connected targetId=7e04d0a7-b6c0-4fa1-b255-5055c47b3374"
-        );
+        tracing::warn!("test warn: requested speaker `LG ULTRAGEAR` fallback to default endpoint");
+        tracing::info!("test info: app connected targetId=7e04d0a7-b6c0-4fa1-b255-5055c47b3374");
         tracing::debug!(
             "test debug: pulse items=[0A0A0A0A00000000,0A0A0A0A64646464] band=[0.17,0.52,0.88,0.11]"
         );
@@ -353,11 +358,7 @@ impl DgLinkGuiApp {
                 .selected_text(self.log_level.directive())
                 .show_ui(ui, |ui| {
                     for level in GuiLogLevel::all() {
-                        ui.selectable_value(
-                            &mut selected_log_level,
-                            level,
-                            level.directive(),
-                        );
+                        ui.selectable_value(&mut selected_log_level, level, level.directive());
                     }
                 });
             if selected_log_level != self.log_level {
@@ -441,10 +442,7 @@ impl DgLinkGuiApp {
         let save_all_label = self.tr("Save All", "导出全部");
         let generate_test_logs_label = self.tr("Generate Test Logs", "生成测试日志");
         let copy_item_label = self.tr("Copy", "复制");
-        let auto_scroll_label = self.tr(
-            "Always scroll to bottom",
-            "始终滚动到底部",
-        );
+        let auto_scroll_label = self.tr("Always scroll to bottom", "始终滚动到底部");
         let collapse_label = self.tr("Collapse", "收起");
         let lines_label = self.tr("Lines", "行数");
         let mut force_scroll_to_bottom = false;
@@ -529,7 +527,10 @@ impl DgLinkGuiApp {
                         .stroke(if selected {
                             egui::Stroke::new(1.0, ui.visuals().selection.stroke.color)
                         } else {
-                            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
+                            egui::Stroke::new(
+                                1.0,
+                                ui.visuals().widgets.noninteractive.bg_stroke.color,
+                            )
                         })
                         .inner_margin(egui::Margin::symmetric(6.0, 4.0));
 
@@ -560,7 +561,9 @@ impl DgLinkGuiApp {
                                                         egui::RichText::new(&entry.timestamp)
                                                             .monospace()
                                                             .small()
-                                                            .color(egui::Color32::from_rgb(90, 90, 90)),
+                                                            .color(egui::Color32::from_rgb(
+                                                                90, 90, 90,
+                                                            )),
                                                     );
                                                 }
                                                 if !entry.target.is_empty() {
@@ -568,7 +571,9 @@ impl DgLinkGuiApp {
                                                         egui::RichText::new(&entry.target)
                                                             .monospace()
                                                             .small()
-                                                            .color(egui::Color32::from_rgb(70, 90, 110)),
+                                                            .color(egui::Color32::from_rgb(
+                                                                70, 90, 110,
+                                                            )),
                                                     );
                                                 }
                                             });
@@ -609,9 +614,10 @@ impl DgLinkGuiApp {
             self.copy_logs_text(ui.ctx(), text);
         }
 
-        let max_scroll_y = (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
-        let at_bottom = max_scroll_y <= 1.0
-            || scroll_output.state.offset.y >= (max_scroll_y - 2.0).max(0.0);
+        let max_scroll_y =
+            (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
+        let at_bottom =
+            max_scroll_y <= 1.0 || scroll_output.state.offset.y >= (max_scroll_y - 2.0).max(0.0);
         if force_scroll_to_bottom {
             self.log_auto_scroll = true;
             ui.ctx().request_repaint();
@@ -821,6 +827,15 @@ impl DgLinkGuiApp {
         let pulse_mode_label = self.tr("Auto pulse mode", "自动波形模式");
         let pulse_mode_by_strength = self.tr("By strength", "按强度映射");
         let pulse_mode_always_max = self.tr("Always max waveform", "波形始终最高");
+        let pattern_mode_label = self.tr("Pattern mode", "波形模式");
+        let fixed_pattern_mode = self.tr("Fixed", "固定");
+        let auto_pattern_mode = self.tr("Auto morph", "自动形变");
+        let pattern_label = self.tr("Waveform pattern", "波形样式");
+        let smooth_label = self.tr("Smooth", "平滑");
+        let punch_label = self.tr("Punch", "重击");
+        let tide_label = self.tr("Tide", "潮汐");
+        let ripple_label = self.tr("Ripple", "涟漪");
+        let shimmer_label = self.tr("Shimmer", "闪烁");
         let contrast_label = self.tr("Waveform contrast", "波形对比度");
         let contrast_hint = self.tr(
             "1.0 = linear mapping, higher value = larger amplitude changes",
@@ -837,6 +852,10 @@ impl DgLinkGuiApp {
         let always_max_note = self.tr(
             "Always max waveform: pulse waveform uses max amplitude while strength still follows the strength panel.",
             "波形始终最高：波形幅度固定最大，但强度仍由左侧强度面板控制。",
+        );
+        let auto_pattern_note = self.tr(
+            "Auto morph picks a waveform from current energy/onset characteristics and morphs from smooth toward that shape.",
+            "自动形变会根据当前能量/瞬态特征选择波形，并从平滑形态连续过渡过去。",
         );
         let v3_note = self.tr(
             "V3 pulse format: 0A0A0A0A + amplitude bytes (00000000..64646464).",
@@ -870,6 +889,81 @@ impl DgLinkGuiApp {
                     AutoPulseMode::AlwaysMax => pulse_mode_always_max,
                 }
             ));
+            egui::ComboBox::from_id_salt("waveform_pattern_mode")
+                .selected_text(match self.state.waveform_pattern_mode {
+                    WaveformPatternMode::Fixed => fixed_pattern_mode,
+                    WaveformPatternMode::AutoMorph => auto_pattern_mode,
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.state.waveform_pattern_mode,
+                        WaveformPatternMode::Fixed,
+                        fixed_pattern_mode,
+                    );
+                    ui.selectable_value(
+                        &mut self.state.waveform_pattern_mode,
+                        WaveformPatternMode::AutoMorph,
+                        auto_pattern_mode,
+                    );
+                });
+            ui.small(format!(
+                "{}: {}",
+                pattern_mode_label,
+                match self.state.waveform_pattern_mode {
+                    WaveformPatternMode::Fixed => fixed_pattern_mode,
+                    WaveformPatternMode::AutoMorph => auto_pattern_mode,
+                }
+            ));
+            if self.state.waveform_pattern_mode == WaveformPatternMode::Fixed {
+                egui::ComboBox::from_id_salt("waveform_pattern")
+                    .selected_text(match self.state.waveform_pattern {
+                        WaveformPattern::Smooth => smooth_label,
+                        WaveformPattern::Punch => punch_label,
+                        WaveformPattern::Tide => tide_label,
+                        WaveformPattern::Ripple => ripple_label,
+                        WaveformPattern::Shimmer => shimmer_label,
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut self.state.waveform_pattern,
+                            WaveformPattern::Smooth,
+                            smooth_label,
+                        );
+                        ui.selectable_value(
+                            &mut self.state.waveform_pattern,
+                            WaveformPattern::Punch,
+                            punch_label,
+                        );
+                        ui.selectable_value(
+                            &mut self.state.waveform_pattern,
+                            WaveformPattern::Tide,
+                            tide_label,
+                        );
+                        ui.selectable_value(
+                            &mut self.state.waveform_pattern,
+                            WaveformPattern::Ripple,
+                            ripple_label,
+                        );
+                        ui.selectable_value(
+                            &mut self.state.waveform_pattern,
+                            WaveformPattern::Shimmer,
+                            shimmer_label,
+                        );
+                    });
+                ui.small(format!(
+                    "{}: {}",
+                    pattern_label,
+                    match self.state.waveform_pattern {
+                        WaveformPattern::Smooth => smooth_label,
+                        WaveformPattern::Punch => punch_label,
+                        WaveformPattern::Tide => tide_label,
+                        WaveformPattern::Ripple => ripple_label,
+                        WaveformPattern::Shimmer => shimmer_label,
+                    }
+                ));
+            } else {
+                ui.small(auto_pattern_note);
+            }
             if self.state.auto_pulse_mode == AutoPulseMode::ByStrength {
                 ui.add(
                     egui::Slider::new(&mut self.state.waveform_contrast, 1.0..=4.0)
@@ -1158,8 +1252,17 @@ impl DgLinkGuiApp {
             "Onset emphasizes sudden hits and beat attacks instead of sustained loudness.",
             "瞬态模式更强调鼓点/攻击瞬间，而不是持续响度。",
         );
+        let band_role_note = self.tr(
+            "These 4 bands are tuned for musical roles, not evenly spaced engineering ranges.",
+            "这 4 个 band 按音乐角色调过，不是平均切开的工程频段。",
+        );
+        let apply_thresholds_label = self.tr("Apply recommended thresholds", "应用推荐触发值");
+        let threshold_preset_note = self.tr(
+            "Kick/Sub 0.38, Bass/Groove 0.46, Vocal/Lead 0.32, Hats/Air 0.54",
+            "底鼓/下潜 0.38，贝斯/律动 0.46，人声/主旋律 0.32，镲片/空气感 0.54",
+        );
         ui.group(|ui| {
-            ui.label(self.tr("Band Routing (4 bands)", "频段路由（4 个频段）"));
+            ui.label(self.tr("Band Routing (4 roles)", "频段路由（4 个角色）"));
             egui::ComboBox::from_id_salt("band_drive_mode")
                 .selected_text(match self.state.band_drive_mode {
                     BandDriveMode::Energy => energy_label,
@@ -1188,6 +1291,13 @@ impl DgLinkGuiApp {
             if self.state.band_drive_mode == BandDriveMode::Onset {
                 ui.small(onset_note);
             }
+            ui.small(band_role_note);
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(apply_thresholds_label).clicked() {
+                    apply_recommended_band_thresholds(&mut self.state.band_routing);
+                }
+                ui.small(threshold_preset_note);
+            });
             ui.separator();
             for index in 0..BAND_COUNT {
                 let band_value = self.state.band_values[index];
@@ -1215,10 +1325,16 @@ impl DgLinkGuiApp {
         routing: &mut BandRouting,
         band_value: f32,
     ) {
+        let profile = band_profile(index);
         ui.horizontal(|ui| {
             ui.checkbox(
                 &mut routing.enabled,
-                format!("{} {}", tr(language, "Band", "频段"), index + 1),
+                format!(
+                    "{} {} · {}",
+                    tr(language, "Band", "频段"),
+                    index + 1,
+                    tr(language, profile.short_name_en, profile.short_name_zh),
+                ),
             );
             ui.add(
                 egui::Slider::new(&mut routing.threshold, 0.0..=1.0).text(tr(
@@ -1250,53 +1366,49 @@ impl DgLinkGuiApp {
                     .text(format!("{band_value:.2}")),
             );
         });
+        let (lo, hi) = profile.range_hz();
+        ui.small(format!(
+            "{lo:.0}-{hi:.0} Hz · {} · {} {:.2}",
+            tr(language, profile.detail_en, profile.detail_zh),
+            tr(language, "Suggested trigger", "建议触发值"),
+            profile.recommended_threshold,
+        ));
 
         ui.horizontal_wrapped(|ui| {
             ui.add(
-                egui::Slider::new(&mut routing.attack_ms, 0..=1_000)
-                    .text(tr(language, "Attack ms", "起音 ms")),
+                egui::Slider::new(&mut routing.attack_ms, 0..=1_000).text(tr(
+                    language,
+                    "Attack ms",
+                    "起音 ms",
+                )),
             );
+            ui.add(egui::Slider::new(&mut routing.hold_ms, 0..=1_000).text(tr(
+                language,
+                "Hold ms",
+                "保持 ms",
+            )));
             ui.add(
-                egui::Slider::new(&mut routing.hold_ms, 0..=1_000)
-                    .text(tr(language, "Hold ms", "保持 ms")),
-            );
-            ui.add(
-                egui::Slider::new(&mut routing.release_ms, 0..=2_000)
-                    .text(tr(language, "Release ms", "释音 ms")),
+                egui::Slider::new(&mut routing.release_ms, 0..=2_000).text(tr(
+                    language,
+                    "Release ms",
+                    "释音 ms",
+                )),
             );
         });
     }
 
     fn draw_band_help_rows(language: UiLanguage, ui: &mut egui::Ui) {
-        let descriptions = [
-            (
-                "Sub-bass / Bass: kick drum, bass line, heavy low-end.",
-                "超低频/低频：底鼓、贝斯线、厚重低频。",
-            ),
-            (
-                "Low-mid: vocal body, snare weight, guitar fundamentals.",
-                "中低频：人声厚度、军鼓主体、吉他基音。",
-            ),
-            (
-                "Mid-high presence: vocal clarity, lead instruments, attack.",
-                "中高频存在感：人声清晰度、主旋律乐器、攻击感。",
-            ),
-            (
-                "Highs / Air: hi-hat, cymbal sparkle, sibilance details.",
-                "高频/空气感：踩镲、镲片亮度、齿音细节。",
-            ),
-        ];
-
         for index in 0..BAND_COUNT {
-            let (lo, hi) = BAND_RANGES_HZ[index];
-            let desc = tr(language, descriptions[index].0, descriptions[index].1);
+            let profile = band_profile(index);
+            let (lo, hi) = profile.range_hz();
             ui.small(format!(
-                "{} {} ({:.0}-{:.0} Hz): {}",
+                "{} {} · {} ({:.0}-{:.0} Hz): {}",
                 tr(language, "Band", "频段"),
                 index + 1,
+                tr(language, profile.short_name_en, profile.short_name_zh),
                 lo,
                 hi,
-                desc
+                tr(language, profile.detail_en, profile.detail_zh),
             ));
         }
     }
@@ -1652,6 +1764,8 @@ impl DgLinkGuiApp {
             pulse_items_per_message: 1,
             auto_pulse_mode: self.state.auto_pulse_mode,
             band_drive_mode: self.state.band_drive_mode,
+            waveform_pattern_mode: self.state.waveform_pattern_mode,
+            waveform_pattern: self.state.waveform_pattern,
             waveform_contrast: self.state.normalized_waveform_contrast(),
             respect_app_soft_limit: self.state.auto_limit_with_app_soft_limit,
             smooth_strength_enabled: self.state.smooth_strength_enabled,

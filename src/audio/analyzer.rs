@@ -1,13 +1,6 @@
 use rustfft::{Fft, FftPlanner, num_complex::Complex32};
 
-use crate::types::BAND_COUNT;
-
-pub const BAND_RANGES_HZ: [(f32, f32); BAND_COUNT] = [
-    (20.0, 150.0),
-    (150.0, 1_000.0),
-    (1_000.0, 4_000.0),
-    (4_000.0, 12_000.0),
-];
+use crate::types::{BAND_COUNT, BAND_PROFILES};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BandAnalysisFrame {
@@ -63,18 +56,19 @@ impl BandAnalyzer {
         self.fft.process(&mut self.spectrum);
 
         let mut energies = [0.0_f32; BAND_COUNT];
-        let mut counts = [0_u32; BAND_COUNT];
+        let mut weights = [0.0_f32; BAND_COUNT];
         let nyquist_bins = self.frame_size / 2;
 
         for bin in 1..nyquist_bins {
             let freq = bin as f32 * self.sample_rate / self.frame_size as f32;
             let mag = self.spectrum[bin].norm_sqr();
             for band_idx in 0..BAND_COUNT {
-                let (lo, hi) = BAND_RANGES_HZ[band_idx];
-                if freq >= lo && freq < hi {
-                    energies[band_idx] += mag;
-                    counts[band_idx] += 1;
-                    break;
+                let profile = BAND_PROFILES[band_idx];
+                let weight =
+                    band_weight_log(freq, profile.low_hz, profile.focus_hz, profile.high_hz);
+                if weight > 0.0 {
+                    energies[band_idx] += mag * weight;
+                    weights[band_idx] += weight;
                 }
             }
         }
@@ -82,8 +76,8 @@ impl BandAnalyzer {
         let mut normalized = [0.0_f32; BAND_COUNT];
         let mut onset = [0.0_f32; BAND_COUNT];
         for band_idx in 0..BAND_COUNT {
-            let energy = if counts[band_idx] > 0 {
-                (energies[band_idx] / counts[band_idx] as f32).sqrt()
+            let energy = if weights[band_idx] > 0.0 {
+                (energies[band_idx] / weights[band_idx]).sqrt()
             } else {
                 0.0
             };
@@ -117,6 +111,26 @@ impl Default for BandAnalyzer {
     }
 }
 
+fn band_weight_log(freq: f32, low_hz: f32, focus_hz: f32, high_hz: f32) -> f32 {
+    if !(low_hz > 0.0 && low_hz < focus_hz && focus_hz < high_hz) {
+        return 0.0;
+    }
+    if freq < low_hz || freq > high_hz {
+        return 0.0;
+    }
+
+    let freq = freq.log10();
+    let low_hz = low_hz.log10();
+    let focus_hz = focus_hz.log10();
+    let high_hz = high_hz.log10();
+
+    if freq <= focus_hz {
+        ((freq - low_hz) / (focus_hz - low_hz)).clamp(0.0, 1.0)
+    } else {
+        ((high_hz - freq) / (high_hz - focus_hz)).clamp(0.0, 1.0)
+    }
+}
+
 fn hann_window(size: usize) -> Vec<f32> {
     if size <= 1 {
         return vec![1.0; size];
@@ -135,7 +149,7 @@ mod tests {
     use super::BandAnalyzer;
 
     #[test]
-    fn responds_to_sine_in_expected_band() {
+    fn responds_to_bass_sine_in_expected_band() {
         let mut analyzer = BandAnalyzer::new(48_000, 1_024);
         let freq = 200.0_f32;
         let samples: Vec<f32> = (0..1_024)
@@ -147,6 +161,36 @@ mod tests {
         let bands = analyzer.analyze(&samples);
         assert!(bands.energy[1] >= bands.energy[0]);
         assert!(bands.energy[1] >= bands.energy[2]);
+    }
+
+    #[test]
+    fn responds_to_voice_sine_in_expected_band() {
+        let mut analyzer = BandAnalyzer::new(48_000, 1_024);
+        let freq = 900.0_f32;
+        let samples: Vec<f32> = (0..1_024)
+            .map(|i| {
+                let t = i as f32 / 48_000.0;
+                (2.0 * std::f32::consts::PI * freq * t).sin()
+            })
+            .collect();
+        let bands = analyzer.analyze(&samples);
+        assert!(bands.energy[2] >= bands.energy[1]);
+        assert!(bands.energy[2] >= bands.energy[3]);
+    }
+
+    #[test]
+    fn responds_to_hihat_like_sine_in_expected_band() {
+        let mut analyzer = BandAnalyzer::new(48_000, 1_024);
+        let freq = 7_000.0_f32;
+        let samples: Vec<f32> = (0..1_024)
+            .map(|i| {
+                let t = i as f32 / 48_000.0;
+                (2.0 * std::f32::consts::PI * freq * t).sin()
+            })
+            .collect();
+        let bands = analyzer.analyze(&samples);
+        assert!(bands.energy[3] >= bands.energy[2]);
+        assert!(bands.energy[3] >= bands.energy[1]);
     }
 
     #[test]
