@@ -908,11 +908,11 @@ impl DgLinkGuiApp {
     fn draw_waveform_panel(&mut self, ui: &mut egui::Ui) {
         let title = self.tr("Waveform Output", "波形输出");
         let pulse_mode_label = self.tr("Auto pulse mode", "自动波形模式");
-        let pulse_mode_by_strength = self.tr("By strength", "按强度映射");
-        let pulse_mode_always_max = self.tr("Always max waveform", "波形始终最高");
+        let pulse_mode_by_strength = self.tr("Follow strength", "跟随强度");
+        let pulse_mode_always_max = self.tr("Full waveform", "满振幅波形");
         let pattern_mode_label = self.tr("Pattern mode", "波形模式");
         let fixed_pattern_mode = self.tr("Fixed", "固定");
-        let auto_pattern_mode = self.tr("Auto morph", "自动形变");
+        let auto_pattern_mode = self.tr("Adaptive morph", "自适应形变");
         let pattern_label = self.tr("Waveform pattern", "波形样式");
         let smooth_label = self.tr("Smooth", "平滑");
         let punch_label = self.tr("Punch", "重击");
@@ -925,20 +925,20 @@ impl DgLinkGuiApp {
             "1.0 = 线性映射，值越大振幅变化越明显",
         );
         let waveform_scope_note = self.tr(
-            "This mode controls waveform shape only, not channel strength.",
-            "该模式只控制波形形状，不会改变通道强度。",
+            "This setting changes waveform character only. Channel strength still follows the strength range.",
+            "此项只影响波形表现，不会改动通道强度。",
         );
         let by_strength_note = self.tr(
-            "By strength: pulse waveform amplitude follows current mapped strength.",
-            "按强度映射：波形幅度跟随当前映射强度变化。",
+            "Follow strength: stronger output produces a larger waveform.",
+            "跟随强度：输出越强，波形振幅越大。",
         );
         let always_max_note = self.tr(
-            "Always max waveform: pulse waveform uses max amplitude while strength still follows the strength panel.",
-            "波形始终最高：波形幅度固定最大，但强度仍由左侧强度面板控制。",
+            "Full waveform: waveform stays at full amplitude while actual channel strength still follows the strength range.",
+            "满振幅波形：波形保持满振幅输出，实际强度仍以左侧强度范围为准。",
         );
         let auto_pattern_note = self.tr(
-            "Auto morph picks a waveform from current energy/onset characteristics and morphs from smooth toward that shape.",
-            "自动形变会根据当前能量/瞬态特征选择波形，并从平滑形态连续过渡过去。",
+            "Adaptive morph adjusts the waveform according to the current rhythm and energy, then transitions naturally between shapes.",
+            "自适应形变会根据当前节奏与能量特征，在不同波形之间自然过渡。",
         );
         let v3_note = self.tr(
             "V3 pulse format: 0A0A0A0A + amplitude bytes (00000000..64646464).",
@@ -1070,7 +1070,7 @@ impl DgLinkGuiApp {
     fn draw_scene_panel(&mut self, ui: &mut egui::Ui) {
         let language = self.state.language;
         let title = self.tr("Scenes & Presets", "场景与预设");
-        let factory_title = self.tr("Factory preset", "内置预设");
+        let factory_title = self.tr("Style preset", "风格预设");
         let factory_apply = self.tr("Apply preset", "应用预设");
         let saved_title = self.tr("Saved scenes", "已保存场景");
         let save_label = self.tr("Save", "保存");
@@ -1078,8 +1078,8 @@ impl DgLinkGuiApp {
         let clear_label = self.tr("Clear", "清空");
         let empty_slot_label = self.tr("Empty slot", "空槽位");
         let preset_note = self.tr(
-            "Presets are starting points. They change style settings but keep your current A/B strength ranges.",
-            "预设只是起点。它们会改变风格参数，但会保留你当前的 A/B 强度范围。",
+            "Presets help you establish a style quickly. They update style parameters but keep the current A/B strength ranges.",
+            "预设用于快速建立风格基线，会调整风格参数，但会保留当前 A/B 强度范围。",
         );
         let drive_mode_label = self.tr("Drive", "驱动");
         let pulse_mode_label = self.tr("Pulse", "波形");
@@ -1188,12 +1188,12 @@ impl DgLinkGuiApp {
         ui.group(|ui| {
             ui.label(self.tr("Audio Source (Speaker Loopback)", "音频源（扬声器回环）"));
             ui.small(self.tr(
-                "Capture source is speaker playback loopback, not microphone.",
-                "采集源是扬声器播放回环，不是麦克风。",
+                "The app captures what your speakers are playing. Microphone input is not used here.",
+                "本程序采集的是扬声器播放内容，不使用麦克风输入。",
             ));
             ui.small(self.tr(
-                "Frame size controls analysis latency vs stability. Lower = faster response, higher = smoother bands.",
-                "Frame size 控制分析延迟和稳定性。越小响应越快，越大频段越稳。",
+                "Frame size balances response speed and analysis stability. Smaller values feel quicker; larger values feel steadier.",
+                "Frame size 用于平衡响应速度与分析稳定性。数值越小，响应越快；数值越大，频段反馈越稳。",
             ));
 
             ui.horizontal(|ui| {
@@ -1289,7 +1289,7 @@ impl DgLinkGuiApp {
             }
             ui.small(format!(
                 "{}: {frame_size}",
-                self.tr("Analysis frame size", "分析 frame size")
+                self.tr("Analysis frame size", "分析窗口大小")
             ));
         });
     }
@@ -1471,17 +1471,17 @@ impl DgLinkGuiApp {
         let language = self.state.language;
         let drive_mode_label = self.tr("Band drive mode", "频段驱动模式");
         let energy_label = self.tr("Energy", "能量");
-        let onset_label = self.tr("Onset", "瞬态");
+        let onset_label = self.tr("Transient", "瞬态");
         let onset_note = self.tr(
-            "Onset emphasizes sudden hits and beat attacks instead of sustained loudness.",
-            "瞬态模式更强调鼓点/攻击瞬间，而不是持续响度。",
+            "Transient mode is better for short accents such as kick hits, plucks, and attack moments.",
+            "瞬态模式更适合捕捉鼓点、拨弦、起音等短促变化。",
         );
         let band_role_note = self.tr(
-            "These 4 bands are tuned for musical roles, not evenly spaced engineering ranges.",
-            "这 4 个 band 按音乐角色调过，不是平均切开的工程频段。",
+            "These 4 bands are organized around common musical roles, so bass, vocals, and high-frequency details are easier to adjust separately.",
+            "这 4 个频段按常见音乐元素划分，便于分别调整低鼓、贝斯、人声与高频细节。",
         );
         ui.group(|ui| {
-            ui.label(self.tr("Band Routing (4 roles)", "频段路由（4 个角色）"));
+            ui.label(self.tr("Band Routing (4 musical roles)", "频段路由（4 个音乐角色）"));
             egui::ComboBox::from_id_salt("band_drive_mode")
                 .selected_text(match self.state.band_drive_mode {
                     BandDriveMode::Energy => energy_label,
@@ -1522,8 +1522,8 @@ impl DgLinkGuiApp {
                 .default_open(false)
                 .show(ui, |ui| {
                     let title = self.tr(
-                        "Each band tracks a different speaker playback frequency range:",
-                        "每个 band 代表扬声器回放中的不同频段：",
+                        "Each band focuses on a different musical role in the playback signal:",
+                        "每个频段对应扬声器回放中的一种主要音乐角色：",
                     );
                     ui.small(title);
                     Self::draw_band_help_rows(language, ui);
