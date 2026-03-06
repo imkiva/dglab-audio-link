@@ -21,11 +21,8 @@ use crate::{
         analyzer::BAND_RANGES_HZ,
         capture::{default_output_device_name, list_output_device_names},
     },
-    domain::{
-        BAND_COUNT,
-        types::{AutoPulseMode, BandRouting, DglabChannel},
-    },
     pipeline::engine::{PipelineEngine, PipelineSettings},
+    types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel},
 };
 
 pub struct DgLinkGuiApp {

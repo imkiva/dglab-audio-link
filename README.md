@@ -31,12 +31,10 @@ src/
   audio/
     capture.rs      # Windows loopback capture skeleton
     analyzer.rs     # 4-band analyzer skeleton
-  domain/
-    types.rs        # shared domain types and constraints
-  signal/
     mapper.rs       # band -> intensity mapping logic
   pipeline/
     engine.rs       # orchestration skeleton
+  types.rs          # shared app-level types and constants
   main.rs           # app entry point
 ```
 

@@ -1,8 +1,7 @@
 mod app;
 mod audio;
-mod domain;
 mod pipeline;
-mod signal;
+mod types;
 
 use std::sync::Arc;
 

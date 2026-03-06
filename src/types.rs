@@ -1,6 +1,8 @@
 pub use dglab_socket_protocol::DglabChannel;
 use serde::{Deserialize, Serialize};
 
+pub const BAND_COUNT: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AutoPulseMode {
     #[default]

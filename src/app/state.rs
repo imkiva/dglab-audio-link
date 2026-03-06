@@ -4,10 +4,7 @@ use dglab_socket_protocol::{
 };
 
 use crate::app::i18n::UiLanguage;
-use crate::domain::{
-    BAND_COUNT,
-    types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},
-};
+use crate::types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel, StrengthRange};
 
 #[derive(Debug, Clone)]
 pub struct AppState {

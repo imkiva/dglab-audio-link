@@ -19,12 +19,11 @@ use tokio::{
 };
 
 use crate::{
-    audio::capture::{LoopbackCapture, LoopbackCaptureConfig},
-    domain::{
-        BAND_COUNT,
-        types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},
+    audio::{
+        capture::{LoopbackCapture, LoopbackCaptureConfig},
+        mapper::{aggregate_channel_strengths, compute_band_outputs},
     },
-    signal::mapper::{aggregate_channel_strengths, compute_band_outputs},
+    types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel, StrengthRange},
 };
 
 const DEFAULT_SEND_INTERVAL_MS: u64 = 100;
@@ -622,7 +621,7 @@ mod tests {
     use super::{
         build_pulse_items_for_strength, merge_bands_with_pending_peaks, smooth_strength_step,
     };
-    use crate::domain::types::AutoPulseMode;
+    use crate::types::AutoPulseMode;
 
     #[test]
     fn builds_strength_based_pulse_items() {

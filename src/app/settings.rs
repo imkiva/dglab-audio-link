@@ -4,10 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     app::{i18n::UiLanguage, state::AppState},
-    domain::{
-        BAND_COUNT,
-        types::{AutoPulseMode, BandRouting, DglabChannel, StrengthRange},
-    },
+    types::{AutoPulseMode, BAND_COUNT, BandRouting, DglabChannel, StrengthRange},
 };
 
 const SETTINGS_FILE_NAME: &str = "settings.json";

@@ -3,7 +3,7 @@ use cpal::{DeviceType, FromSample, InterfaceType};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use tokio::sync::mpsc;
 
-use crate::{audio::analyzer::BandAnalyzer, domain::BAND_COUNT};
+use crate::{audio::analyzer::BandAnalyzer, types::BAND_COUNT};
 
 #[derive(Debug, Clone)]
 pub struct LoopbackCaptureConfig {

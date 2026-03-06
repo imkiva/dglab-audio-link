@@ -1,7 +1,4 @@
-use crate::domain::{
-    BAND_COUNT,
-    types::{BandRouting, DglabChannel, StrengthRange},
-};
+use crate::types::{BAND_COUNT, BandRouting, DglabChannel, StrengthRange};
 
 pub fn map_band_to_strength(value: f32, threshold: f32, range: StrengthRange) -> u16 {
     let range = range.normalized();
@@ -57,7 +54,7 @@ pub fn aggregate_channel_strengths(
 #[cfg(test)]
 mod tests {
     use super::{aggregate_channel_strengths, compute_band_outputs, map_band_to_strength};
-    use crate::domain::types::{BandRouting, DglabChannel, StrengthRange};
+    use crate::types::{BandRouting, DglabChannel, StrengthRange};
 
     #[test]
     fn returns_zero_when_below_threshold() {
