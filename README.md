@@ -16,6 +16,13 @@ Rust desktop app (nightly toolchain) for:
 - OS target (current phase): Windows only
 - GUI: `eframe/egui` (lightweight, native desktop)
 
+## Download
+
+- Release page:
+  https://github.com/imkiva/dglab-audio-link/releases/tag/nightly
+- Direct download (Windows x64 nightly build):
+  https://github.com/imkiva/dglab-audio-link/releases/download/nightly/dglab-audio-link-nightly-windows-x86_64.exe
+
 ## Project layout
 
 ```text
