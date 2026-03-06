@@ -1265,7 +1265,7 @@ impl DgLinkGuiApp {
                 ));
             }
 
-            if let Some(default_name) = default_output_device_name() {
+            if let Some(default_name) = self.state.system_default_output_device.as_deref() {
                 ui.small(format!(
                     "{}: {default_name}",
                     self.tr("System default speaker", "系统默认扬声器")
@@ -1654,6 +1654,7 @@ impl DgLinkGuiApp {
         match list_output_device_names() {
             Ok(devices) => {
                 self.state.available_output_devices = devices;
+                self.state.system_default_output_device = default_output_device_name();
                 if let Some(selected) = self.state.selected_output_device.as_ref() {
                     if !self
                         .state
@@ -1665,7 +1666,7 @@ impl DgLinkGuiApp {
                     }
                 }
                 if self.state.selected_output_device.is_none() {
-                    if let Some(default_name) = default_output_device_name() {
+                    if let Some(default_name) = self.state.system_default_output_device.clone() {
                         if self
                             .state
                             .available_output_devices
@@ -1679,6 +1680,7 @@ impl DgLinkGuiApp {
             }
             Err(err) => {
                 self.state.available_output_devices.clear();
+                self.state.system_default_output_device = None;
                 self.state.set_error(format!(
                     "{}: {err}",
                     self.tr("failed to enumerate speakers", "枚举扬声器失败")
