@@ -1,6 +1,6 @@
 # dglab-audio-link
 
-**OpenAI Codex 匠心打造，代码含人量 0%**
+**OpenAI Codex 24K 纯 Token 匠心打造，代码含人量 0%**
 
 Rust desktop app (nightly toolchain) for:
 
