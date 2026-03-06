@@ -6,10 +6,11 @@ mod types;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 fn main() -> Result<()> {
-    init_logging();
+    let log_buffer = app::logs::GuiLogBuffer::new();
+    let (log_reload_handle, initial_log_level) = init_logging(log_buffer.clone());
     let language = app::i18n::detect_system_language();
 
     let runtime = Arc::new(
@@ -33,6 +34,9 @@ fn main() -> Result<()> {
             Ok(Box::new(app::gui::DgLinkGuiApp::new(
                 runtime.clone(),
                 language,
+                log_buffer.clone(),
+                log_reload_handle.clone(),
+                initial_log_level,
             )))
         }),
     )
@@ -41,7 +45,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn init_logging() {
+fn init_logging(
+    log_buffer: app::logs::GuiLogBuffer,
+) -> (app::logs::GuiLogReloadHandle, app::logs::GuiLogLevel) {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    let initial_log_level = app::logs::GuiLogLevel::from_filter_text(&filter.to_string());
+    let (filter_layer, reload_handle) = tracing_subscriber::reload::Layer::new(filter);
+
+    let _ = tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(
+            fmt::layer()
+                .with_ansi(false)
+                .with_writer(move || app::logs::GuiLogWriter::new(log_buffer.clone())),
+        )
+        .try_init();
+
+    (reload_handle, initial_log_level)
 }

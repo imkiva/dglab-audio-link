@@ -14,6 +14,7 @@ use dglab_socket_protocol::{
 use crate::{
     app::{
         i18n::{UiLanguage, tr},
+        logs::{GuiLogBuffer, GuiLogLevel, GuiLogReloadHandle},
         settings::{self, PersistedSettings},
         state::AppState,
     },
@@ -28,12 +29,17 @@ use crate::{
 pub struct DgLinkGuiApp {
     state: AppState,
     engine: PipelineEngine,
+    log_buffer: GuiLogBuffer,
+    log_reload_handle: GuiLogReloadHandle,
+    log_level: GuiLogLevel,
     qr_texture: Option<egui::TextureHandle>,
     qr_error: Option<String>,
     last_qr_payload: String,
     prev_app_bound: bool,
     last_title_language: UiLanguage,
     last_persisted_settings: PersistedSettings,
+    show_log_panel: bool,
+    log_auto_scroll: bool,
     strength_history_started_at: Instant,
     strength_history: VecDeque<(f64, u16, u16)>,
 }
@@ -44,6 +50,8 @@ const STRENGTH_HISTORY_SAMPLE_INTERVAL_SECONDS: f64 = 0.25;
 const REPAINT_ACTIVE_MS: u64 = 120;
 const REPAINT_RUNNING_MS: u64 = 250;
 const REPAINT_IDLE_MS: u64 = 600;
+const BASE_WINDOW_WIDTH: f32 = 980.0;
+const LOG_PANEL_WIDTH_HINT: f32 = 360.0;
 
 pub fn install_cjk_font(ctx: &egui::Context) {
     #[cfg(target_os = "windows")]
@@ -89,7 +97,13 @@ pub fn install_cjk_font(ctx: &egui::Context) {
 }
 
 impl DgLinkGuiApp {
-    pub fn new(runtime: Arc<Runtime>, language: UiLanguage) -> Self {
+    pub fn new(
+        runtime: Arc<Runtime>,
+        language: UiLanguage,
+        log_buffer: GuiLogBuffer,
+        log_reload_handle: GuiLogReloadHandle,
+        initial_log_level: GuiLogLevel,
+    ) -> Self {
         let mut state = AppState::default();
         state.language = language;
         match settings::load_settings() {
@@ -103,12 +117,17 @@ impl DgLinkGuiApp {
         let mut app = Self {
             state,
             engine: PipelineEngine::new(runtime),
+            log_buffer,
+            log_reload_handle,
+            log_level: initial_log_level,
             qr_texture: None,
             qr_error: None,
             last_qr_payload: String::new(),
             prev_app_bound: false,
             last_title_language: initial_language,
             last_persisted_settings,
+            show_log_panel: false,
+            log_auto_scroll: true,
             strength_history_started_at: Instant::now(),
             strength_history: VecDeque::new(),
         };
@@ -122,7 +141,51 @@ impl DgLinkGuiApp {
         tr(self.state.language, en, zh_cn)
     }
 
+    fn set_log_level(&mut self, level: GuiLogLevel) {
+        if self.log_level == level {
+            return;
+        }
+
+        match self
+            .log_reload_handle
+            .modify(|filter| *filter = tracing_subscriber::EnvFilter::new(level.directive()))
+        {
+            Ok(()) => {
+                self.log_level = level;
+                self.state.clear_error();
+                tracing::info!("GUI log level changed to {}", level.directive());
+            }
+            Err(err) => {
+                self.state
+                    .set_error(format!("failed to change log level: {err}"));
+            }
+        }
+    }
+
+    fn set_log_panel_visibility(&mut self, ctx: &egui::Context, show: bool) {
+        if self.show_log_panel == show {
+            return;
+        }
+
+        let current_size = ctx
+            .input(|i| i.viewport().inner_rect.map(|rect| rect.size()))
+            .unwrap_or_else(|| ctx.screen_rect().size());
+
+        let next_width = if show {
+            current_size.x + LOG_PANEL_WIDTH_HINT
+        } else {
+            (current_size.x - LOG_PANEL_WIDTH_HINT).max(BASE_WINDOW_WIDTH)
+        };
+
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            next_width,
+            current_size.y,
+        )));
+        self.show_log_panel = show;
+    }
+
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
+        let log_level_label = self.tr("Log level:", "日志级别：");
         ui.horizontal(|ui| {
             ui.label(self.tr("Program WS URL:", "程序 WS 地址："));
             ui.text_edit_singleline(&mut self.state.websocket_url);
@@ -135,6 +198,23 @@ impl DgLinkGuiApp {
                         ui.selectable_value(&mut self.state.language, language, language.label());
                     }
                 });
+
+            let mut selected_log_level = self.log_level;
+            ui.label(log_level_label);
+            egui::ComboBox::from_id_salt("gui_log_level")
+                .selected_text(self.log_level.directive())
+                .show_ui(ui, |ui| {
+                    for level in GuiLogLevel::all() {
+                        ui.selectable_value(
+                            &mut selected_log_level,
+                            level,
+                            level.directive(),
+                        );
+                    }
+                });
+            if selected_log_level != self.log_level {
+                self.set_log_level(selected_log_level);
+            }
         });
 
         ui.horizontal_wrapped(|ui| {
@@ -184,10 +264,73 @@ impl DgLinkGuiApp {
                     self.start_engine();
                 }
             }
+
+            let logs_button = if self.show_log_panel {
+                self.tr("Hide Logs", "隐藏日志")
+            } else {
+                self.tr("Show Logs", "显示日志")
+            };
+            if ui.button(logs_button).clicked() {
+                self.set_log_panel_visibility(ui.ctx(), !self.show_log_panel);
+            }
         });
 
         if let Some(err) = &self.state.last_error {
             ui.colored_label(egui::Color32::from_rgb(200, 40, 40), err);
+        }
+    }
+
+    fn draw_log_panel(&mut self, ui: &mut egui::Ui) {
+        let lines = self.log_buffer.snapshot();
+        let logs_label = self.tr("Logs", "日志");
+        let clear_label = self.tr("Clear", "清空");
+        let auto_scroll_label = self.tr(
+            "Always scroll to bottom",
+            "始终滚动到底部",
+        );
+        let collapse_label = self.tr("Collapse", "收起");
+        let lines_label = self.tr("Lines", "行数");
+        let mut force_scroll_to_bottom = false;
+        let mut always_scroll = self.log_auto_scroll;
+
+        ui.horizontal(|ui| {
+            ui.heading(logs_label);
+            if ui.button(clear_label).clicked() {
+                self.log_buffer.clear();
+            }
+            let auto_scroll_response = ui.checkbox(&mut always_scroll, auto_scroll_label);
+            if auto_scroll_response.changed() && always_scroll {
+                force_scroll_to_bottom = true;
+            }
+            if ui.button(collapse_label).clicked() {
+                self.set_log_panel_visibility(ui.ctx(), false);
+            }
+        });
+        ui.separator();
+        ui.small(format!("{lines_label}: {}", lines.len()));
+
+        let scroll_output = egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .stick_to_bottom(self.log_auto_scroll || force_scroll_to_bottom)
+            .show(ui, |ui| {
+                ui.style_mut().override_text_style = Some(egui::TextStyle::Monospace);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for line in lines {
+                    ui.label(line);
+                }
+                if force_scroll_to_bottom {
+                    ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                }
+            });
+
+        let max_scroll_y = (scroll_output.content_size.y - scroll_output.inner_rect.height()).max(0.0);
+        let at_bottom = max_scroll_y <= 1.0
+            || scroll_output.state.offset.y >= (max_scroll_y - 2.0).max(0.0);
+        if force_scroll_to_bottom {
+            self.log_auto_scroll = true;
+            ui.ctx().request_repaint();
+        } else {
+            self.log_auto_scroll = at_bottom;
         }
     }
 
@@ -1206,6 +1349,16 @@ impl eframe::App for DgLinkGuiApp {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             self.draw_top_bar(ui);
         });
+
+        if self.show_log_panel {
+            egui::SidePanel::right("log_panel")
+                .default_width(360.0)
+                .min_width(240.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    self.draw_log_panel(ui);
+                });
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical()
