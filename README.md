@@ -1,6 +1,10 @@
 # dglab-audio-link
 
-**OpenAI Codex 24K 纯 Token 匠心打造，代码含人量 0%**
+**OpenAI Codex 24K — forged from 24K pure tokens, with a certified 0% human ingredient list.**
+**Use at your own risk.**
+
+**OpenAI Codex 24K 纯 Token 匠心打造，代码含人量 0%。**
+**使用者风险自负。**
 
 Rust desktop app (nightly toolchain) for:
 
